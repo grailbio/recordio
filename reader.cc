@@ -1,4 +1,3 @@
-#include <endian.h>
 #include <zlib.h>
 
 #include <array>
@@ -8,6 +7,7 @@
 #include <sstream>
 #include <vector>
 
+#include "./portable_endian.h"
 #include "lib/file/names.h"
 #include "lib/recordio/recordio.h"
 
@@ -26,8 +26,8 @@ constexpr int DataOffset = sizeof(Magic) + 8 + Crc32Size;
 // HeaderSize is the size in bytes of the recordio header.
 constexpr int HeaderSize = DataOffset;
 
-const Magic MagicUnpacked = {0xfc, 0xae, 0x95, 0x31, 0xf0, 0xd9, 0xbd, 0x20};
-const Magic MagicPacked = {0x2e, 0x76, 0x47, 0xeb, 0x34, 0x07, 0x3c, 0x2e};
+const Magic MagicUnpacked = {{0xfc, 0xae, 0x95, 0x31, 0xf0, 0xd9, 0xbd, 0x20}};
+const Magic MagicPacked = {{0x2e, 0x76, 0x47, 0xeb, 0x34, 0x07, 0x3c, 0x2e}};
 
 // MaxReadRecordSize defines a max size for a record when reading to avoid
 // crashes for unreasonable requests.

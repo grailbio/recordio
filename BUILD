@@ -4,7 +4,10 @@ cc_library(
     hdrs = ["recordio.h"],
     linkopts = ["-lz"],
     visibility = ["//visibility:public"],
-    deps = ["//lib/file"],
+    deps = [
+        "//lib/file",
+        "@com_github_gist_panzi_portable_endian_h//:portable_endian",
+    ],
 )
 
 cc_test(
