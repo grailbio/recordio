@@ -39,9 +39,9 @@ uint32_t Crc32(const char* data, int bytes) {
 
 std::string RunTransformer(RecordIOTransformer* t, std::vector<char>* buf,
                            int buf_off) {
-  RecordIOReader::Span in{buf->data() + buf_off, buf->size() - buf_off};
+  RecordIOSpan in{buf->data() + buf_off, buf->size() - buf_off};
   std::string err;
-  RecordIOReader::Span out = t->Transform(in, &err);
+  RecordIOSpan out = t->Transform(in, &err);
   if (!err.empty()) return err;
 
   buf->resize(out.size);
@@ -238,7 +238,7 @@ class UnpackedReaderImpl : public RecordIOReader {
   }
 
   std::vector<char>* Mutable() { return &block_; }
-  Span Get() { return Span{block_.data(), block_.size()}; }
+  RecordIOSpan Get() { return RecordIOSpan{block_.data(), block_.size()}; }
   std::string Error() { return r_->Error(); }
 
  private:
@@ -266,15 +266,16 @@ class PackedReaderImpl : public RecordIOReader {
   }
 
   std::vector<char>* Mutable() {
-    const Span span = Get();
+    const RecordIOSpan span = Get();
     tmp_.resize(span.size);
     std::copy(span.data, span.data + span.size, tmp_.begin());
     return &tmp_;
   }
 
-  Span Get() {
+  RecordIOSpan Get() {
     const Item item = items_[cur_item_];
-    return Span{items_start_ + item.offset, static_cast<size_t>(item.size)};
+    return RecordIOSpan{
+        items_start_ + item.offset, static_cast<size_t>(item.size)};
   }
 
   std::string Error() { return r_->Error(); }
@@ -354,7 +355,7 @@ class PackedReaderImpl : public RecordIOReader {
 };
 
 class UncompressTransformer : public RecordIOTransformer {
-  RecordIOReader::Span Transform(RecordIOReader::Span in, std::string* err) {
+  RecordIOSpan Transform(RecordIOSpan in, std::string* err) {
     err->clear();
     z_stream stream;
     memset(&stream, 0, sizeof stream);
@@ -363,7 +364,7 @@ class UncompressTransformer : public RecordIOTransformer {
       std::ostringstream msg;
       msg << "inflateInit failed(" << ret << ")";
       *err = msg.str();
-      return RecordIOReader::Span{nullptr, 0};
+      return RecordIOSpan{nullptr, 0};
     }
     if (tmp_.capacity() >= static_cast<size_t>(in.size) * 2) {
       tmp_.resize(tmp_.capacity());
@@ -382,11 +383,11 @@ class UncompressTransformer : public RecordIOTransformer {
         msg << "inflate failed(" << ret << ")";
         *err = msg.str();
         inflateEnd(&stream);
-        return RecordIOReader::Span{nullptr, 0};
+        return RecordIOSpan{nullptr, 0};
       }
       if (stream.avail_out > 0 || ret == Z_STREAM_END) {
         inflateEnd(&stream);
-        return RecordIOReader::Span{tmp_.data(),
+        return RecordIOSpan{tmp_.data(),
                                     tmp_.size() - stream.avail_out};
       }
       size_t cur_size = tmp_.size();
