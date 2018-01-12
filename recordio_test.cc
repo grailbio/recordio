@@ -54,4 +54,27 @@ TEST(Recordio, Error) {
   EXPECT_FALSE(r->Scan());
   EXPECT_THAT(r->Error(), ::testing::HasSubstr("No such file or directory"));
 }
+
+TEST(Recordio, CompressTransformers) {
+  const std::string str =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  std::string err("");
+
+  auto compressor = CompressRecordIOTransformer();
+  auto compressed = compressor->Transform(
+      RecordIOSpan{str.data(), str.size()}, &err);
+  ASSERT_EQ(std::string(""), err);
+  ASSERT_NE(compressed.data, nullptr);
+  ASSERT_GT(compressed.size, 0);
+
+  auto uncompressor = UncompressRecordIOTransformer();
+  auto uncompressed = uncompressor->Transform(compressed, &err);
+  ASSERT_EQ(std::string(""), err);
+  ASSERT_NE(uncompressed.data, nullptr);
+  ASSERT_GT(uncompressed.size, 0);
+
+  const std::string str2(uncompressed.data, uncompressed.size);
+  ASSERT_EQ(str, str2);
+}
+
 }  // namespace grail

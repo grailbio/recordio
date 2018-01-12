@@ -1,6 +1,9 @@
 cc_library(
     name = "recordio",
-    srcs = ["reader.cc"],
+    srcs = [
+        "reader.cc",
+        "writer.cc",
+    ],
     hdrs = ["recordio.h"],
     linkopts = ["-lz"],
     visibility = ["//visibility:public"],

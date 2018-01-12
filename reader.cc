@@ -359,7 +359,7 @@ class UncompressTransformer : public RecordIOTransformer {
     err->clear();
     z_stream stream;
     memset(&stream, 0, sizeof stream);
-    int ret = inflateInit2(&stream, -15 /*RPC1951*/);
+    int ret = inflateInit2(&stream, -15 /*RFC1951*/);
     if (ret != Z_OK) {
       std::ostringstream msg;
       msg << "inflateInit failed(" << ret << ")";
@@ -385,7 +385,7 @@ class UncompressTransformer : public RecordIOTransformer {
         inflateEnd(&stream);
         return RecordIOSpan{nullptr, 0};
       }
-      if (stream.avail_out > 0 || ret == Z_STREAM_END) {
+      if (ret == Z_STREAM_END) {
         inflateEnd(&stream);
         return RecordIOSpan{tmp_.data(),
                                     tmp_.size() - stream.avail_out};
@@ -398,6 +398,7 @@ class UncompressTransformer : public RecordIOTransformer {
   }
   std::vector<char> tmp_;
 };
+
 }  // namespace
 }  // namespace grail
 
