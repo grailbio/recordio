@@ -10,6 +10,7 @@
 #include "./portable_endian.h"
 #include "lib/file/names.h"
 #include "lib/recordio/recordio.h"
+#include "lib/recordio/recordio_internal.h"
 
 namespace grail {
 
@@ -17,25 +18,16 @@ RecordIOReader::~RecordIOReader() {}
 RecordIOTransformer::~RecordIOTransformer() {}
 
 namespace {
-typedef std::array<uint8_t, 8> Magic;
 
-constexpr int SizeOffset = sizeof(Magic);
-constexpr int CrcOffset = sizeof(Magic) + 8;
-constexpr int Crc32Size = 4;
-constexpr int DataOffset = sizeof(Magic) + 8 + Crc32Size;
+constexpr int SizeOffset = sizeof(RecordIOMagic);
+constexpr int CrcOffset = SizeOffset + 8;
+constexpr int DataOffset = CrcOffset + 4;
 // HeaderSize is the size in bytes of the recordio header.
 constexpr int HeaderSize = DataOffset;
-
-const Magic MagicUnpacked = {{0xfc, 0xae, 0x95, 0x31, 0xf0, 0xd9, 0xbd, 0x20}};
-const Magic MagicPacked = {{0x2e, 0x76, 0x47, 0xeb, 0x34, 0x07, 0x3c, 0x2e}};
 
 // MaxReadRecordSize defines a max size for a record when reading to avoid
 // crashes for unreasonable requests.
 constexpr uint64_t MaxReadRecordSize = 1ULL << 29;
-
-uint32_t Crc32(const char* data, int bytes) {
-  return crc32(0, reinterpret_cast<const Bytef*>(data), bytes);
-}
 
 std::string RunTransformer(RecordIOTransformer* t, std::vector<char>* buf,
                            int buf_off) {
@@ -101,16 +93,11 @@ class BinaryParser {
   int bytes_;
 };
 
-class Cleanup {
- public:
-  virtual ~Cleanup() {}
-};
-
 // BaseReader implements a raw reader w/o any transformation.
 class BaseReader {
  public:
-  explicit BaseReader(std::istream* in, Magic magic,
-                      std::unique_ptr<Cleanup> cleanup)
+  explicit BaseReader(std::istream* in, RecordIOMagic magic,
+                      std::unique_ptr<RecordIOCleanup> cleanup)
       : in_(in), magic_(magic), cleanup_(std::move(cleanup)) {
   }
 
@@ -175,7 +162,8 @@ class BaseReader {
       SetError("header too small (crc)");
       return false;
     }
-    auto actual_crc = Crc32(header + SizeOffset, CrcOffset - SizeOffset);
+    auto actual_crc = RecordIOCrc32(
+      header + SizeOffset, CrcOffset - SizeOffset);
     if (actual_crc != expected_crc) {
       std::ostringstream msg;
       msg << "corrupt header crc, expect " << expected_crc << " found "
@@ -209,8 +197,8 @@ class BaseReader {
   }
 
   std::istream* const in_;
-  const Magic magic_;
-  const std::unique_ptr<Cleanup> cleanup_;
+  const RecordIOMagic magic_;
+  const std::unique_ptr<RecordIOCleanup> cleanup_;
   std::string err_;
   std::vector<char> buf_;
 };
@@ -220,17 +208,17 @@ class UnpackedReaderImpl : public RecordIOReader {
  public:
   explicit UnpackedReaderImpl(std::istream* in,
                               std::unique_ptr<RecordIOTransformer> transformer,
-                              std::unique_ptr<Cleanup> cleanup)
-      : r_(new BaseReader(in, MagicUnpacked, std::move(cleanup))),
+                              std::unique_ptr<RecordIOCleanup> cleanup)
+      : r_(in, RecordIOMagicUnpacked, std::move(cleanup)),
         transformer_(std::move(transformer)) {}
 
   bool Scan() {
-    if (!r_->Scan()) return false;
-    block_ = std::move(*r_->Mutable());
+    if (!r_.Scan()) return false;
+    block_ = std::move(*r_.Mutable());
     if (transformer_ != nullptr) {
       const std::string err = RunTransformer(transformer_.get(), &block_, 0);
       if (!err.empty()) {
-        r_->SetError(err);
+        r_.SetError(err);
         return false;
       }
     }
@@ -239,10 +227,10 @@ class UnpackedReaderImpl : public RecordIOReader {
 
   std::vector<char>* Mutable() { return &block_; }
   RecordIOSpan Get() { return RecordIOSpan{block_.data(), block_.size()}; }
-  std::string Error() { return r_->Error(); }
+  std::string Error() { return r_.Error(); }
 
  private:
-  std::unique_ptr<BaseReader> r_;  // Underlying unpacked reader.
+  BaseReader r_;  // Underlying unpacked reader.
   const std::unique_ptr<RecordIOTransformer> transformer_;
   std::vector<char> block_;  // Current rio block being read
 };
@@ -252,8 +240,8 @@ class PackedReaderImpl : public RecordIOReader {
  public:
   explicit PackedReaderImpl(std::istream* in,
                             std::unique_ptr<RecordIOTransformer> transformer,
-                            std::unique_ptr<Cleanup> cleanup)
-      : r_(new BaseReader(in, MagicPacked, std::move(cleanup))),
+                            std::unique_ptr<RecordIOCleanup> cleanup)
+      : r_(in, RecordIOMagicPacked, std::move(cleanup)),
         transformer_(std::move(transformer)),
         cur_item_(0) {}
 
@@ -278,36 +266,36 @@ class PackedReaderImpl : public RecordIOReader {
         items_start_ + item.offset, static_cast<size_t>(item.size)};
   }
 
-  std::string Error() { return r_->Error(); }
+  std::string Error() { return r_.Error(); }
 
  private:
   // Read and parse the next block from the underlying (unpacked) reader.
   bool ReadBlock() {
     cur_item_ = 0;
     items_.clear();
-    if (!r_->Scan()) return false;
+    if (!r_.Scan()) return false;
 
-    block_ = std::move(*r_->Mutable());
+    block_ = std::move(*r_.Mutable());
     BinaryParser parser(block_.data(), block_.size());
     uint32_t expected_crc;
     if (!parser.ReadLEUint32(&expected_crc)) {
-      r_->SetError("invalid block header (crc)");
+      r_.SetError("invalid block header (crc)");
       return false;
     }
     const char* crc_start = parser.Data();
     uint64_t n_items;
     if (!parser.ReadUVarint(&n_items)) {
-      r_->SetError("invalid block header (n_items)");
+      r_.SetError("invalid block header (n_items)");
       return false;
     }
     if (n_items <= 0 || n_items >= block_.size()) {
-      r_->SetError("invalid block header (n_items)");
+      r_.SetError("invalid block header (n_items)");
       return false;
     }
     for (uint32_t i = 0; i < n_items; i++) {
       uint64_t item_size;
       if (!parser.ReadUVarint(&item_size)) {
-        r_->SetError("invalid block header(item_size)");
+        r_.SetError("invalid block header(item_size)");
         return false;
       }
       Item item = {0, static_cast<int>(item_size)};
@@ -317,9 +305,10 @@ class PackedReaderImpl : public RecordIOReader {
       items_.push_back(item);
     }
     items_start_ = parser.Data();
-    const uint32_t actual_crc = Crc32(crc_start, items_start_ - crc_start);
+    const uint32_t actual_crc = RecordIOCrc32(
+        crc_start, items_start_ - crc_start);
     if (actual_crc != expected_crc) {
-      r_->SetError("wrong crc");
+      r_.SetError("wrong crc");
       return false;
     }
     const char* items_limit = nullptr;
@@ -327,7 +316,7 @@ class PackedReaderImpl : public RecordIOReader {
       size_t off = items_start_ - block_.data();
       const std::string err = RunTransformer(transformer_.get(), &block_, off);
       if (!err.empty()) {
-        r_->SetError(err);
+        r_.SetError(err);
         return false;
       }
       items_start_ = block_.data();
@@ -335,7 +324,7 @@ class PackedReaderImpl : public RecordIOReader {
     items_limit = block_.data() + block_.size();
     if (items_.back().offset + items_.back().size !=
         (items_limit - items_start_)) {
-      r_->SetError("junk at the end of block");
+      r_.SetError("junk at the end of block");
       return false;
     }
     return true;
@@ -345,7 +334,7 @@ class PackedReaderImpl : public RecordIOReader {
     int offset;  // byte offset from items_start_
     int size;    // byte size of the item
   };
-  std::unique_ptr<BaseReader> r_;  // Underlying unpacked reader.
+  BaseReader r_;  // Underlying unpacked reader.
   const std::unique_ptr<RecordIOTransformer> transformer_;
   std::vector<char> block_;  // Current rio block being read
   std::vector<Item> items_;  // Result of parsing the block_ metadata
@@ -400,10 +389,8 @@ class UncompressTransformer : public RecordIOTransformer {
 };
 
 }  // namespace
-}  // namespace grail
 
-grail::RecordIOReaderOpts grail::DefaultRecordIOReaderOpts(
-    const std::string& path) {
+RecordIOReaderOpts DefaultRecordIOReaderOpts(const std::string& path) {
   RecordIOReaderOpts r;
   switch (DetermineFileType(path)) {
     case FileType::GrailRIO:
@@ -422,7 +409,7 @@ grail::RecordIOReaderOpts grail::DefaultRecordIOReaderOpts(
   return r;
 }
 
-std::unique_ptr<grail::RecordIOReader> grail::NewRecordIOReader(
+std::unique_ptr<RecordIOReader> NewRecordIOReader(
     std::istream* in, RecordIOReaderOpts opts) {
   if (opts.packed) {
     return std::unique_ptr<RecordIOReader>(
@@ -433,9 +420,8 @@ std::unique_ptr<grail::RecordIOReader> grail::NewRecordIOReader(
   }
 }
 
-std::unique_ptr<grail::RecordIOReader> grail::NewRecordIOReader(
-    const std::string& path) {
-  class Closer : public Cleanup {
+std::unique_ptr<RecordIOReader> NewRecordIOReader(const std::string& path) {
+  class Closer : public RecordIOCleanup {
    public:
     std::ifstream in;
   };
@@ -452,8 +438,9 @@ std::unique_ptr<grail::RecordIOReader> grail::NewRecordIOReader(
   }
 }
 
-std::unique_ptr<grail::RecordIOTransformer>
-grail::UncompressRecordIOTransformer() {
-  return std::unique_ptr<grail::RecordIOTransformer>(
+std::unique_ptr<RecordIOTransformer> UncompressRecordIOTransformer() {
+  return std::unique_ptr<RecordIOTransformer>(
       new UncompressTransformer());
 }
+
+}  // namespace grail

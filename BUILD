@@ -4,7 +4,10 @@ cc_library(
         "reader.cc",
         "writer.cc",
     ],
-    hdrs = ["recordio.h"],
+    hdrs = [
+        "recordio.h",
+        "recordio_internal.h",
+    ],
     linkopts = ["-lz"],
     visibility = ["//visibility:public"],
     deps = [
@@ -21,6 +24,7 @@ cc_test(
     linkstatic = 1,
     deps = [
         ":recordio",
+        "//lib/test_util",
         "@com_github_google_googletest//:gmock",
         "@com_github_google_googletest//:gtest",
     ],

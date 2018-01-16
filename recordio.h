@@ -135,7 +135,7 @@ struct RecordIOWriterOpts {
 
 // Create a new writer that writes to "out". "out" remains owned by the caller,
 // and it must remain live while the writer is in use.
-std::unique_ptr<RecordIOWriter> NewRecordIOWriter(std::istream* in,
+std::unique_ptr<RecordIOWriter> NewRecordIOWriter(std::ostream* out,
                                                   RecordIOWriterOpts opts);
 
 // Create a new writer for the given file. The options are auto-detected from
