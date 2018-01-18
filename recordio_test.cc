@@ -1,14 +1,14 @@
-#include <gtest/gtest.h>
 #include <gmock/gmock.h>
+#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cstdio>
-#include <iterator>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 
-#include "lib/test_util/test_util.h"
 #include "lib/recordio/recordio.h"
+#include "lib/test_util/test_util.h"
 
 namespace grail {
 
@@ -53,10 +53,9 @@ std::string ReadFile(std::string filename) {
   std::ifstream file(filename);
   EXPECT_FALSE(file.fail());
   std::ostringstream contents;
-  std::copy(
-      std::istreambuf_iterator<char>(file),
-      std::istreambuf_iterator<char>(),
-      std::ostreambuf_iterator<char>(contents));
+  std::copy(std::istreambuf_iterator<char>(file),
+            std::istreambuf_iterator<char>(),
+            std::ostreambuf_iterator<char>(contents));
   return contents.str();
 }
 
@@ -70,8 +69,8 @@ TEST(Recordio, Write) {
     }
   }
 
-  EXPECT_EQ(
-      ReadFile("lib/recordio/testdata/test.grail-rio"), ReadFile(filename));
+  EXPECT_EQ(ReadFile("lib/recordio/testdata/test.grail-rio"),
+            ReadFile(filename));
 
   remove(filename.c_str());
 }
@@ -98,8 +97,8 @@ TEST(Recordio, CompressTransformers) {
   std::string err("");
 
   auto compressor = CompressRecordIOTransformer();
-  auto compressed = compressor->Transform(
-      RecordIOSpan{str.data(), str.size()}, &err);
+  auto compressed =
+      compressor->Transform(RecordIOSpan{str.data(), str.size()}, &err);
   ASSERT_EQ(std::string(""), err);
   ASSERT_NE(compressed.data, nullptr);
   ASSERT_GT(compressed.size, 0);

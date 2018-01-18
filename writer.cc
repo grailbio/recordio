@@ -19,10 +19,9 @@ namespace {
 // class BaseWriter implements a raw writer w/o any transformation.
 class BaseWriter {
  public:
-  explicit BaseWriter(std::ostream *out, RecordIOMagic magic,
+  explicit BaseWriter(std::ostream* out, RecordIOMagic magic,
                       std::unique_ptr<RecordIOCleanup> cleanup)
-      : out_(out), magic_(magic), cleanup_(std::move(cleanup)) {
-  }
+      : out_(out), magic_(magic), cleanup_(std::move(cleanup)) {}
 
   bool Write(RecordIOSpan in) {
     if (!WriteHeader(in.size)) return false;
@@ -47,13 +46,13 @@ class BaseWriter {
  private:
   bool WriteLEUint64(uint64_t v) {
     uint64_t le = htole64(v);
-    out_->write(reinterpret_cast<const char *>(&le), sizeof le);
+    out_->write(reinterpret_cast<const char*>(&le), sizeof le);
     return out_->good();
   }
 
   bool WriteLEUint32(uint32_t v) {
     uint32_t le = htole64(v);
-    out_->write(reinterpret_cast<const char *>(&le), sizeof le);
+    out_->write(reinterpret_cast<const char*>(&le), sizeof le);
     return out_->good();
   }
 
@@ -73,8 +72,8 @@ class BaseWriter {
     }
 
     uint64_t size_le = htole64(size);
-    uint32_t size_crc32 = RecordIOCrc32(
-        reinterpret_cast<const char*>(&size_le), sizeof size_le);
+    uint32_t size_crc32 =
+        RecordIOCrc32(reinterpret_cast<const char*>(&size_le), sizeof size_le);
     WriteLEUint32(size_crc32);
     if (!out_->good()) {
       SetError("Failed to write header size checksum");
@@ -124,7 +123,7 @@ class CompressTransformer : public RecordIOTransformer {
     z_stream stream;
     memset(&stream, 0, sizeof stream);
     int ret = deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
-        -15 /*RFC1951*/, MAX_MEM_LEVEL, Z_DEFAULT_STRATEGY);
+                           -15 /*RFC1951*/, MAX_MEM_LEVEL, Z_DEFAULT_STRATEGY);
     if (ret != Z_OK) {
       std::ostringstream msg;
       msg << "deflateInit failed(" << ret << ")";
@@ -172,8 +171,8 @@ RecordIOWriterOpts DefaultRecordIOWriterOpts(const std::string& path) {
   return r;
 }
 
-std::unique_ptr<RecordIOWriter> NewRecordIOWriter(
-    std::ostream* out, RecordIOWriterOpts opts) {
+std::unique_ptr<RecordIOWriter> NewRecordIOWriter(std::ostream* out,
+                                                  RecordIOWriterOpts opts) {
   if (opts.packed) {
     return nullptr;
   } else {
@@ -200,8 +199,7 @@ std::unique_ptr<RecordIOWriter> NewRecordIOWriter(const std::string& path) {
 }
 
 std::unique_ptr<RecordIOTransformer> CompressRecordIOTransformer() {
-  return std::unique_ptr<grail::RecordIOTransformer>(
-      new CompressTransformer());
+  return std::unique_ptr<grail::RecordIOTransformer>(new CompressTransformer());
 }
 
 }  // namespace grail

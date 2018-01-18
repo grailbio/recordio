@@ -98,8 +98,7 @@ class BaseReader {
  public:
   explicit BaseReader(std::istream* in, RecordIOMagic magic,
                       std::unique_ptr<RecordIOCleanup> cleanup)
-      : in_(in), magic_(magic), cleanup_(std::move(cleanup)) {
-  }
+      : in_(in), magic_(magic), cleanup_(std::move(cleanup)) {}
 
   bool Scan() {
     uint64_t size;
@@ -162,8 +161,8 @@ class BaseReader {
       SetError("header too small (crc)");
       return false;
     }
-    auto actual_crc = RecordIOCrc32(
-      header + SizeOffset, CrcOffset - SizeOffset);
+    auto actual_crc =
+        RecordIOCrc32(header + SizeOffset, CrcOffset - SizeOffset);
     if (actual_crc != expected_crc) {
       std::ostringstream msg;
       msg << "corrupt header crc, expect " << expected_crc << " found "
@@ -262,8 +261,8 @@ class PackedReaderImpl : public RecordIOReader {
 
   RecordIOSpan Get() {
     const Item item = items_[cur_item_];
-    return RecordIOSpan{
-        items_start_ + item.offset, static_cast<size_t>(item.size)};
+    return RecordIOSpan{items_start_ + item.offset,
+                        static_cast<size_t>(item.size)};
   }
 
   std::string Error() { return r_.Error(); }
@@ -305,8 +304,8 @@ class PackedReaderImpl : public RecordIOReader {
       items_.push_back(item);
     }
     items_start_ = parser.Data();
-    const uint32_t actual_crc = RecordIOCrc32(
-        crc_start, items_start_ - crc_start);
+    const uint32_t actual_crc =
+        RecordIOCrc32(crc_start, items_start_ - crc_start);
     if (actual_crc != expected_crc) {
       r_.SetError("wrong crc");
       return false;
@@ -376,8 +375,7 @@ class UncompressTransformer : public RecordIOTransformer {
       }
       if (ret == Z_STREAM_END) {
         inflateEnd(&stream);
-        return RecordIOSpan{tmp_.data(),
-                                    tmp_.size() - stream.avail_out};
+        return RecordIOSpan{tmp_.data(), tmp_.size() - stream.avail_out};
       }
       size_t cur_size = tmp_.size();
       tmp_.resize(cur_size * 2);
@@ -409,8 +407,8 @@ RecordIOReaderOpts DefaultRecordIOReaderOpts(const std::string& path) {
   return r;
 }
 
-std::unique_ptr<RecordIOReader> NewRecordIOReader(
-    std::istream* in, RecordIOReaderOpts opts) {
+std::unique_ptr<RecordIOReader> NewRecordIOReader(std::istream* in,
+                                                  RecordIOReaderOpts opts) {
   if (opts.packed) {
     return std::unique_ptr<RecordIOReader>(
         new PackedReaderImpl(in, std::move(opts.transformer), nullptr));
@@ -439,8 +437,7 @@ std::unique_ptr<RecordIOReader> NewRecordIOReader(const std::string& path) {
 }
 
 std::unique_ptr<RecordIOTransformer> UncompressRecordIOTransformer() {
-  return std::unique_ptr<RecordIOTransformer>(
-      new UncompressTransformer());
+  return std::unique_ptr<RecordIOTransformer>(new UncompressTransformer());
 }
 
 }  // namespace grail
