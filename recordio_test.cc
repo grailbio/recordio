@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iterator>
 #include <sstream>
+#include <utility>
 
 #include "lib/recordio/recordio.h"
 #include "lib/test_util/test_util.h"
@@ -28,6 +29,14 @@ std::string TestBlock(int n) {
   const int record_size = 8;
   const int start_index = n % (str.size() - record_size + 1);
   return str.substr(start_index, record_size);
+}
+
+void WriteContentsAndClose(RecordIOWriter* w) {
+  for (int i = 0; i < TestBlockCount; i++) {
+    std::string block = TestBlock(i);
+    ASSERT_TRUE(w->Write(RecordIOSpan{block.data(), block.size()}));
+  }
+  ASSERT_TRUE(w->Close());
 }
 
 void CheckContents(RecordIOReader* r) {
@@ -63,14 +72,58 @@ TEST(Recordio, Write) {
   std::string filename = test_util::GetTempDirPath() + "/test.grail-rio";
   {
     auto r = NewRecordIOWriter(filename);
-    for (int i = 0; i < TestBlockCount; i++) {
-      std::string block = TestBlock(i);
-      ASSERT_TRUE(r->Write(RecordIOSpan{block.data(), block.size()}));
-    }
+    WriteContentsAndClose(r.get());
   }
 
   EXPECT_EQ(ReadFile("lib/recordio/testdata/test.grail-rio"),
             ReadFile(filename));
+
+  remove(filename.c_str());
+}
+
+TEST(Recordio, WritePacked) {
+  std::string filename = test_util::GetTempDirPath() + "/test.grail-rpk";
+  {
+    auto r = NewRecordIOWriter(filename);
+    WriteContentsAndClose(r.get());
+  }
+
+  EXPECT_EQ(ReadFile("lib/recordio/testdata/test.grail-rpk"),
+            ReadFile(filename));
+
+  remove(filename.c_str());
+}
+
+TEST(Recordio, WritePackedGz) {
+  std::string filename = test_util::GetTempDirPath() + "/test.grail-rpk-gz";
+  {
+    auto r = NewRecordIOWriter(filename);
+    WriteContentsAndClose(r.get());
+  }
+
+  {
+    auto r = NewRecordIOReader(filename);
+    CheckContents(r.get());
+  }
+
+  remove(filename.c_str());
+}
+
+TEST(Recordio, WriteOptions) {
+  std::string filename = test_util::GetTempDirPath() + "/test.grail-rpk-gz";
+  {
+    auto opts = DefaultRecordIOWriterOpts(filename);
+    opts.max_packed_items = 3;
+    opts.max_packed_bytes = 100;
+    std::ofstream out(filename);
+    auto r = NewRecordIOWriter(&out, std::move(opts));
+    WriteContentsAndClose(r.get());
+  }
+
+  {
+    auto r = NewRecordIOReader(filename);
+    CheckContents(r.get());
+  }
 
   remove(filename.c_str());
 }

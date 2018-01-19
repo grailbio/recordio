@@ -113,6 +113,11 @@ class RecordIOWriter {
   // failure.
   virtual bool Write(RecordIOSpan in) = 0;
 
+  // Close the writer and underlying resources. After Close(), callers must not
+  // Write() anymore. Callers may still call Error(). To ensure the last block
+  // is written, Close() must be called after the last Write().
+  virtual bool Close() = 0;
+
   // Get any error seen by the writer. It returns "" if there is no error.
   virtual std::string Error() = 0;
 
@@ -120,6 +125,9 @@ class RecordIOWriter {
   RecordIOWriter(const RecordIOWriter&) = delete;
   virtual ~RecordIOWriter();
 };
+
+constexpr int64_t RecordIOWriterDefaultMaxPackedItems = 16 * 1024;
+constexpr int64_t RecordIOWriterDefaultMaxPackedBytes = 16 * 1024 * 1024;
 
 struct RecordIOWriterOpts {
   // If packed=true, then write the "packed" recordio file as defined in
@@ -129,7 +137,17 @@ struct RecordIOWriterOpts {
   // invocation.
   bool packed = false;
 
-  // If non-null, this function is called for every block write.
+  // max_packed_items is the maximum number of items that will be packed into
+  // a single block. This is ignored if packed == false.
+  int64_t max_packed_items = RecordIOWriterDefaultMaxPackedItems;
+
+  // max_packed_bytes is the maximum total item size that will be packed into
+  // a single block. This is ignored if packed == false. Note that size is
+  // measured before transformation.
+  int64_t max_packed_bytes = RecordIOWriterDefaultMaxPackedBytes;
+
+  // If non-null, this function is called for every block write. Users should
+  // provide the inverse transformation to recover the original block.
   std::unique_ptr<RecordIOTransformer> transformer;
 };
 
