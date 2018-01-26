@@ -129,6 +129,22 @@ class RecordIOWriter {
 constexpr int64_t RecordIOWriterDefaultMaxPackedItems = 16 * 1024;
 constexpr int64_t RecordIOWriterDefaultMaxPackedBytes = 16 * 1024 * 1024;
 
+// RecordIOWriterIndexer defines a callback so users of RecordIOWriter can
+// build an index while RecordIOWriter is writing a recordio file. It only
+// allows indexing blocks, not items, regardless of whether the writer is
+// creating a packed or unpacked file.
+// TODO(josh): Consider adding item indexing support (need to handle block
+// transformations).
+class RecordIOWriterIndexer {
+ public:
+  // IndexBlock is invoked when the writer finishes writing a block starting
+  // at start_offset. If any error occurs, implementation must return a
+  // non-empty message.
+  virtual std::string IndexBlock(uint64_t start_offset) = 0;
+
+  virtual ~RecordIOWriterIndexer();
+};
+
 struct RecordIOWriterOpts {
   // If packed=true, then write the "packed" recordio file as defined in
   // https://github.com/grailbio/base/blob/master/recordio/doc.go, and callers
@@ -149,6 +165,9 @@ struct RecordIOWriterOpts {
   // If non-null, this function is called for every block write. Users should
   // provide the inverse transformation to recover the original block.
   std::unique_ptr<RecordIOTransformer> transformer;
+
+  // If non-null, this function is called after every block write.
+  std::unique_ptr<RecordIOWriterIndexer> indexer;
 };
 
 // Create a new writer that writes to "out". "out" remains owned by the caller,

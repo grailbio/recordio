@@ -16,6 +16,7 @@
 namespace grail {
 
 RecordIOWriter::~RecordIOWriter() {}
+RecordIOWriterIndexer::~RecordIOWriterIndexer() {}
 
 namespace {
 
@@ -32,13 +33,20 @@ class FileCloser : public RecordIOCleanup {
 class BaseWriter {
  public:
   explicit BaseWriter(std::ostream* out, RecordIOMagic magic,
-                      std::unique_ptr<FileCloser> cleanup)
-      : out_(out), magic_(magic), cleanup_(std::move(cleanup)) {}
+                      std::unique_ptr<FileCloser> cleanup,
+                      std::unique_ptr<RecordIOWriterIndexer> indexer)
+      : out_(out),
+        initial_pos_(out->tellp()),
+        magic_(magic),
+        cleanup_(std::move(cleanup)),
+        indexer_(std::move(indexer)) {}
 
   // Write accepts two spans and writes them both, contiguously, into a single
   // record. It accepts two just to avoid an extra data copy in the packed
   // writer.
   bool Write(RecordIOSpan one, RecordIOSpan two) {
+    uint64_t block_start = static_cast<uint64_t>(out_->tellp() - initial_pos_);
+
     if (!WriteHeader(one.size + two.size)) return false;
 
     out_->write(one.data, one.size);
@@ -53,6 +61,14 @@ class BaseWriter {
       if (!out_->good()) {
         SetError(std::string("Failed to write data part 2: ") +
                  std::strerror(errno));
+        return false;
+      }
+    }
+
+    if (indexer_ != nullptr) {
+      std::string error = indexer_->IndexBlock(block_start);
+      if (!error.empty()) {
+        SetError(std::string("Indexer error: ") + error);
         return false;
       }
     }
@@ -118,9 +134,11 @@ class BaseWriter {
   }
 
   std::ostream* const out_;
+  const std::streampos initial_pos_;
   const RecordIOMagic magic_;
   const std::unique_ptr<FileCloser> cleanup_;
   std::string err_;
+  const std::unique_ptr<RecordIOWriterIndexer> indexer_;
 };
 
 // Implementation of an unpacked writer.
@@ -128,8 +146,9 @@ class UnpackedWriterImpl : public RecordIOWriter {
  public:
   explicit UnpackedWriterImpl(std::ostream* out,
                               std::unique_ptr<RecordIOTransformer> transformer,
+                              std::unique_ptr<RecordIOWriterIndexer> indexer,
                               std::unique_ptr<FileCloser> cleanup)
-      : r_(out, RecordIOMagicUnpacked, std::move(cleanup)),
+      : r_(out, RecordIOMagicUnpacked, std::move(cleanup), std::move(indexer)),
         transformer_(std::move(transformer)) {}
 
   bool Write(RecordIOSpan in) {
@@ -213,10 +232,11 @@ class PackedWriterImpl : public RecordIOWriter {
  public:
   explicit PackedWriterImpl(std::ostream* out,
                             std::unique_ptr<RecordIOTransformer> transformer,
+                            std::unique_ptr<RecordIOWriterIndexer> indexer,
                             std::unique_ptr<FileCloser> cleanup,
                             const uint32_t max_packed_items,
                             const uint32_t max_packed_bytes)
-      : r_(out, RecordIOMagicPacked, std::move(cleanup)),
+      : r_(out, RecordIOMagicPacked, std::move(cleanup), std::move(indexer)),
         transformer_(std::move(transformer)),
         max_packed_items_(max_packed_items),
         max_packed_bytes_(max_packed_bytes) {}
@@ -344,12 +364,12 @@ RecordIOWriterOpts DefaultRecordIOWriterOpts(const std::string& path) {
 std::unique_ptr<RecordIOWriter> NewRecordIOWriter(std::ostream* out,
                                                   RecordIOWriterOpts opts) {
   if (opts.packed) {
-    return std::unique_ptr<RecordIOWriter>(
-        new PackedWriterImpl(out, std::move(opts.transformer), nullptr,
-                             opts.max_packed_items, opts.max_packed_bytes));
+    return std::unique_ptr<RecordIOWriter>(new PackedWriterImpl(
+        out, std::move(opts.transformer), std::move(opts.indexer), nullptr,
+        opts.max_packed_items, opts.max_packed_bytes));
   } else {
-    return std::unique_ptr<RecordIOWriter>(
-        new UnpackedWriterImpl(out, std::move(opts.transformer), nullptr));
+    return std::unique_ptr<RecordIOWriter>(new UnpackedWriterImpl(
+        out, std::move(opts.transformer), std::move(opts.indexer), nullptr));
   }
 }
 
@@ -359,12 +379,13 @@ std::unique_ptr<RecordIOWriter> NewRecordIOWriter(const std::string& path) {
   std::unique_ptr<FileCloser> c(new FileCloser);
   c->out.open(path.c_str());
   if (opts.packed) {
-    return std::unique_ptr<RecordIOWriter>(
-        new PackedWriterImpl(&c->out, std::move(opts.transformer), std::move(c),
-                             opts.max_packed_items, opts.max_packed_bytes));
+    return std::unique_ptr<RecordIOWriter>(new PackedWriterImpl(
+        &c->out, std::move(opts.transformer), std::move(opts.indexer),
+        std::move(c), opts.max_packed_items, opts.max_packed_bytes));
   } else {
-    return std::unique_ptr<RecordIOWriter>(new UnpackedWriterImpl(
-        &c->out, std::move(opts.transformer), std::move(c)));
+    return std::unique_ptr<RecordIOWriter>(
+        new UnpackedWriterImpl(&c->out, std::move(opts.transformer),
+                               std::move(opts.indexer), std::move(c)));
   }
 }
 

@@ -109,7 +109,7 @@ TEST(Recordio, WritePackedGz) {
   remove(filename.c_str());
 }
 
-TEST(Recordio, WriteOptions) {
+TEST(Recordio, WritePackingOptions) {
   std::string filename = test_util::GetTempDirPath() + "/test.grail-rpk-gz";
   {
     auto opts = DefaultRecordIOWriterOpts(filename);
@@ -126,6 +126,55 @@ TEST(Recordio, WriteOptions) {
   }
 
   remove(filename.c_str());
+}
+
+class TestIndexer : public RecordIOWriterIndexer {
+ public:
+  // Caller retains ownership of block_offsets.
+  explicit TestIndexer(std::vector<uint64_t>* block_offsets)
+      : block_offsets_(block_offsets) {}
+
+  std::string IndexBlock(uint64_t start_offset) override {
+    block_offsets_->push_back(start_offset);
+    return "";
+  }
+
+  ~TestIndexer() {}
+
+ private:
+  std::vector<uint64_t>* block_offsets_;
+};
+
+TEST(Recordio, WriteIndex) {
+  std::string filename = test_util::GetTempDirPath() + "/test.grail-rio";
+  std::vector<uint64_t> block_offsets;
+  {
+    auto opts = DefaultRecordIOWriterOpts(filename);
+    opts.indexer.reset(new TestIndexer(&block_offsets));
+
+    std::ofstream out(filename);
+    auto r = NewRecordIOWriter(&out, std::move(opts));
+    WriteContentsAndClose(r.get());
+  }
+
+  ASSERT_GT(block_offsets.size(), 0);
+
+  // To check that block offsets are correct, create a reader at some offsets,
+  // read a few blocks, and check their contents. This also demonstrates how to
+  // read a recordio file concurrently.
+  for (int block = 0; block < TestBlockCount;) {
+    std::ifstream in(filename);
+    in.seekg(static_cast<std::streampos>(block_offsets[block]));
+    ASSERT_FALSE(in.fail());
+    ASSERT_FALSE(in.eof());
+    auto r = NewRecordIOReader(&in, DefaultRecordIOReaderOpts(filename));
+
+    for (int i = 0; i < 10 && block < TestBlockCount; i++) {
+      ASSERT_TRUE(r->Scan());
+      EXPECT_EQ(TestBlock(block), Str(r.get()));
+      block++;
+    }
+  }
 }
 
 TEST(Recordio, ReadPacked) {
