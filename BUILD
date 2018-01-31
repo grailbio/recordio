@@ -1,12 +1,18 @@
 cc_library(
     name = "recordio",
     srcs = [
+        "chunk.cc",
+        "chunk.h",
+        "header.cc",
+        "header.h",
+        "internal.cc",
+        "internal.h",
+        "legacy_reader.cc",
         "reader.cc",
         "writer.cc",
     ],
     hdrs = [
         "recordio.h",
-        "recordio_internal.h",
     ],
     linkopts = ["-lz"],
     visibility = ["//visibility:public"],

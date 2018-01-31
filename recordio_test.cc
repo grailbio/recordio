@@ -5,15 +5,17 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <random>
 #include <sstream>
 #include <utility>
 
+#include "lib/recordio/internal.h"
 #include "lib/recordio/recordio.h"
 #include "lib/test_util/test_util.h"
 
 namespace grail {
 
-std::string Str(RecordIOReader* r) {
+std::string Str(recordio::Reader* r) {
   std::string s;
   for (char ch : *r->Mutable()) {
     s.append(1, ch);
@@ -31,15 +33,16 @@ std::string TestBlock(int n) {
   return str.substr(start_index, record_size);
 }
 
-void WriteContentsAndClose(RecordIOWriter* w) {
+void WriteContentsAndClose(recordio::Writer* w) {
   for (int i = 0; i < TestBlockCount; i++) {
     std::string block = TestBlock(i);
-    ASSERT_TRUE(w->Write(RecordIOSpan{block.data(), block.size()}));
+    ASSERT_TRUE(w->Write(recordio::ByteSpan{
+        reinterpret_cast<const uint8_t*>(block.data()), block.size()}));
   }
   ASSERT_TRUE(w->Close());
 }
 
-void CheckContents(RecordIOReader* r) {
+void CheckContents(recordio::Reader* r) {
   int n = 0;
   while (r->Scan()) {
     const std::string expected = TestBlock(n);
@@ -47,14 +50,34 @@ void CheckContents(RecordIOReader* r) {
     EXPECT_EQ("", r->Error());
     n++;
   }
-  EXPECT_EQ(TestBlockCount, n);
   EXPECT_EQ("", r->Error());
+  EXPECT_EQ(TestBlockCount, n);
+}
+
+void CheckHeader(recordio::Reader* r) {
+  auto h = r->Header();
+  ASSERT_EQ(h.size(), 4);
+  ASSERT_EQ(h[0].key, "intflag");
+  ASSERT_EQ(h[0].value.type, recordio::HeaderValue::INT);
+  ASSERT_EQ(h[0].value.i, 12345);
+
+  ASSERT_EQ(h[1].key, "uintflag");
+  ASSERT_EQ(h[1].value.type, recordio::HeaderValue::UINT);
+  ASSERT_EQ(h[1].value.u, 12345);
+
+  ASSERT_EQ(h[1].key, "strflag");
+  ASSERT_EQ(h[1].value.type, recordio::HeaderValue::STRING);
+  ASSERT_EQ(h[1].value.s, "Hello");
+
+  ASSERT_EQ(h[1].key, "boolflag");
+  ASSERT_EQ(h[1].value.type, recordio::HeaderValue::BOOL);
+  ASSERT_EQ(h[1].value.b, true);
 }
 
 TEST(Recordio, Read) {
   std::ifstream in("lib/recordio/testdata/test.grail-rio");
   ASSERT_FALSE(in.fail());
-  auto r = NewRecordIOReader(&in, RecordIOReaderOpts{});
+  auto r = recordio::NewReader(&in, recordio::ReaderOpts{});
   CheckContents(r.get());
 }
 
@@ -71,7 +94,7 @@ std::string ReadFile(std::string filename) {
 TEST(Recordio, Write) {
   std::string filename = test_util::GetTempDirPath() + "/test.grail-rio";
   {
-    auto r = NewRecordIOWriter(filename);
+    auto r = recordio::NewWriter(filename);
     WriteContentsAndClose(r.get());
   }
 
@@ -84,7 +107,7 @@ TEST(Recordio, Write) {
 TEST(Recordio, WritePacked) {
   std::string filename = test_util::GetTempDirPath() + "/test.grail-rpk";
   {
-    auto r = NewRecordIOWriter(filename);
+    auto r = recordio::NewWriter(filename);
     WriteContentsAndClose(r.get());
   }
 
@@ -97,12 +120,12 @@ TEST(Recordio, WritePacked) {
 TEST(Recordio, WritePackedGz) {
   std::string filename = test_util::GetTempDirPath() + "/test.grail-rpk-gz";
   {
-    auto r = NewRecordIOWriter(filename);
+    auto r = recordio::NewWriter(filename);
     WriteContentsAndClose(r.get());
   }
 
   {
-    auto r = NewRecordIOReader(filename);
+    auto r = recordio::NewReader(filename);
     CheckContents(r.get());
   }
 
@@ -112,23 +135,23 @@ TEST(Recordio, WritePackedGz) {
 TEST(Recordio, WritePackingOptions) {
   std::string filename = test_util::GetTempDirPath() + "/test.grail-rpk-gz";
   {
-    auto opts = DefaultRecordIOWriterOpts(filename);
+    auto opts = recordio::DefaultWriterOpts(filename);
     opts.max_packed_items = 3;
     opts.max_packed_bytes = 100;
     std::ofstream out(filename);
-    auto r = NewRecordIOWriter(&out, std::move(opts));
+    auto r = recordio::NewWriter(&out, std::move(opts));
     WriteContentsAndClose(r.get());
   }
 
   {
-    auto r = NewRecordIOReader(filename);
+    auto r = recordio::NewReader(filename);
     CheckContents(r.get());
   }
 
   remove(filename.c_str());
 }
 
-class TestIndexer : public RecordIOWriterIndexer {
+class TestIndexer : public recordio::WriterIndexer {
  public:
   // Caller retains ownership of block_offsets.
   explicit TestIndexer(std::vector<uint64_t>* block_offsets)
@@ -149,11 +172,11 @@ TEST(Recordio, WriteIndex) {
   std::string filename = test_util::GetTempDirPath() + "/test.grail-rio";
   std::vector<uint64_t> block_offsets;
   {
-    auto opts = DefaultRecordIOWriterOpts(filename);
+    auto opts = recordio::DefaultWriterOpts(filename);
     opts.indexer.reset(new TestIndexer(&block_offsets));
 
     std::ofstream out(filename);
-    auto r = NewRecordIOWriter(&out, std::move(opts));
+    auto r = recordio::NewWriter(&out, std::move(opts));
     WriteContentsAndClose(r.get());
   }
 
@@ -167,52 +190,83 @@ TEST(Recordio, WriteIndex) {
     in.seekg(static_cast<std::streampos>(block_offsets[block]));
     ASSERT_FALSE(in.fail());
     ASSERT_FALSE(in.eof());
-    auto r = NewRecordIOReader(&in, DefaultRecordIOReaderOpts(filename));
+    auto r = recordio::NewReader(&in, recordio::DefaultReaderOpts(filename));
 
     for (int i = 0; i < 10 && block < TestBlockCount; i++) {
       ASSERT_TRUE(r->Scan());
-      EXPECT_EQ(TestBlock(block), Str(r.get()));
+      EXPECT_EQ(TestBlock(block), Str(r.get())) << "i=" << i;
       block++;
     }
   }
 }
 
 TEST(Recordio, ReadPacked) {
-  auto r = NewRecordIOReader("lib/recordio/testdata/test.grail-rpk");
+  auto r = recordio::NewReader("lib/recordio/testdata/test.grail-rpk");
   CheckContents(r.get());
 }
 
 TEST(Recordio, ReadPackedGz) {
-  auto r = NewRecordIOReader("lib/recordio/testdata/test.grail-rpk-gz");
+  auto r = recordio::NewReader("lib/recordio/testdata/test.grail-rpk-gz");
+  CheckContents(r.get());
+}
+
+TEST(Recordio, Read2) {
+  auto r = recordio::NewReader("lib/recordio/testdata/test.grail-rio2");
   CheckContents(r.get());
 }
 
 TEST(Recordio, ReadError) {
-  auto r = NewRecordIOReader("/non/existent/file");
+  auto r = recordio::NewReader("/non/existent/file");
   EXPECT_FALSE(r->Scan());
   EXPECT_THAT(r->Error(), ::testing::HasSubstr("No such file or directory"));
 }
 
-TEST(Recordio, CompressTransformers) {
-  const std::string str =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+void DoCompressTest(const std::string& str, int n_iov) {
   std::string err("");
 
-  auto compressor = CompressRecordIOTransformer();
-  auto compressed =
-      compressor->Transform(RecordIOSpan{str.data(), str.size()}, &err);
-  ASSERT_EQ(std::string(""), err);
-  ASSERT_NE(compressed.data, nullptr);
-  ASSERT_GT(compressed.size, 0);
+  std::vector<recordio::ByteSpan> in(n_iov);
+  int chunk_len = str.size() / n_iov;
+  auto compressor = recordio::CompressTransformer();
 
-  auto uncompressor = UncompressRecordIOTransformer();
+  int start = 0;
+  for (int i = 0; i < n_iov; i++) {
+    const int len = (i < n_iov - 1) ? chunk_len : (str.size() - start);
+    in[i] = recordio::ByteSpan(
+        reinterpret_cast<const uint8_t*>(str.data()) + start, len);
+    start += len;
+  }
+  const recordio::IoVec compressed =
+      compressor->Transform(recordio::IoVec{&in}, &err);
+  ASSERT_EQ(std::string(""), err);
+  ASSERT_GT(recordio::internal::IoVecSize(compressed), 0);
+
+  auto uncompressor = recordio::UncompressTransformer();
   auto uncompressed = uncompressor->Transform(compressed, &err);
   ASSERT_EQ(std::string(""), err);
-  ASSERT_NE(uncompressed.data, nullptr);
-  ASSERT_GT(uncompressed.size, 0);
-
-  const std::string str2(uncompressed.data, uncompressed.size);
+  ASSERT_GT(recordio::internal::IoVecSize(uncompressed), 0);
+  auto flattened = recordio::internal::IoVecFlatten(uncompressed);
+  const std::string str2(reinterpret_cast<const char*>(flattened.data()),
+                         flattened.size());
   ASSERT_EQ(str, str2);
+}
+
+TEST(Recordio, CompressSmall) {
+  DoCompressTest("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", 1);
+  DoCompressTest("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", 2);
+}
+
+TEST(Recordio, CompressRandom) {
+  std::default_random_engine r;
+  for (int i = 0; i < 20; i++) {
+    const int len = std::uniform_int_distribution<int>(128, 100000)(r);
+    const int num_iov = std::uniform_int_distribution<int>(1, 10)(r);
+    std::vector<char> data(len);
+    std::uniform_int_distribution<int> d(0, 64);
+    for (int j = 0; j < len; j++) {
+      data[j] = 'A' + d(r);
+    }
+    DoCompressTest(std::string(&data[0], len), num_iov);
+  }
 }
 
 }  // namespace grail

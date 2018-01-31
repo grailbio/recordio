@@ -1,36 +1,40 @@
 #ifndef LIB_RECORDIO_RECORDIO_H_
 #define LIB_RECORDIO_RECORDIO_H_
 
+// Recordio file reader and writer.
+//
+// https://github.com/grailbio/base/blob/master/recordio/README.md
+//
+// The C++ reader handles the old and the new file formats.
+//
+// The writer supports only the old file format as of 2018-02.
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "lib/recordio/header.h"
+#include "lib/recordio/internal.h"
+
 namespace grail {
+namespace recordio {
+typedef internal::ByteSpan ByteSpan;
+typedef internal::IoVec IoVec;
 
-// RecordIOSpan is like vector<char>, but doesn't own data.
-//
-// TODO(saito) Replace with std::span<char> once c++-20 comes out.
-struct RecordIOSpan {
-  const char* data;
-  size_t size;
-};
-
-// RecordIOReader reads a recordio file. Recordio file format is defined below:
-//
-// https://github.com/grailbio/base/blob/master/recordio/doc.go
+// Class Reader reads a recordio file.
 //
 // This class is thread compatible.
 //
 // Example:
-//   auto r := NewRecordIOReader("test.grail-rio");
+//   auto r := recordio::NewReader("test.grail-rio");
 //   while (r->Scan()) {
-//     std::vector<char> data;
+//     std::vector<uint8_t> data;
 //     std::swap(data, *r->Mutable());
 //     .. use data ..
 //   }
 //   CHECK_EQ(r->Error(), "");
-class RecordIOReader {
+class Reader {
  public:
   // Read the next record. Scan() must also be called to read the very first
   // record.
@@ -40,78 +44,79 @@ class RecordIOReader {
   // record is invalidated on the next call to Scan or the destructor.
   //
   // REQUIRES: The last call to Scan() returned true.
-  virtual RecordIOSpan Get() = 0;
+  virtual ByteSpan Get() = 0;
 
   // Get the current record. The caller may take ownership of the data by
   // swapping the contents. The record is invalidated on the next call to Scan
   // or the destructor.
   //
   // REQUIRES: The last call to Scan() returned true.
-  virtual std::vector<char>* Mutable() = 0;
+  virtual std::vector<uint8_t>* Mutable() = 0;
+
+  // Return the header-block contents. It returns an empty array if the header
+  // doesn't exist, or on error. Check Error() distinguish the two cases.
+  virtual std::vector<HeaderEntry> Header() = 0;
+
+  // Return the header-block contents. It returns an empty array if the trailer
+  // doesn't exist, or on error. Check Error() distinguish the two cases.
+  virtual ByteSpan Trailer() = 0;
 
   // Get any error seen by the reader. It returns "" if there is no error.
   virtual std::string Error() = 0;
 
-  RecordIOReader() = default;
-  RecordIOReader(const RecordIOReader&) = delete;
-  virtual ~RecordIOReader();
+  Reader() = default;
+  Reader(const Reader&) = delete;
+  virtual ~Reader();
 };
 
 // Transformer is a closure invoked after reading a block.
-class RecordIOTransformer {
+class Transformer {
  public:
   // Called on on every block read. "in" holds the data read from the file, and
   // this function should return another span. The span contents are owned by
   // this object, and it may be destroyed on the next call to Transform.  On
   // error, this function should set a nonempty *error.
-  virtual RecordIOSpan Transform(RecordIOSpan in, std::string* error) = 0;
-  RecordIOTransformer() = default;
-  RecordIOTransformer(const RecordIOTransformer&) = delete;
-  ~RecordIOTransformer();
+  virtual IoVec Transform(IoVec in, std::string* error) = 0;
+  Transformer() = default;
+  Transformer(const Transformer&) = delete;
+  ~Transformer();
 };
 
-struct RecordIOReaderOpts {
-  // If packed=true, then parse the "packed" recordio file as defined in
-  // https://github.com/grailbio/base/blob/master/recordio/doc.go. Get() or
-  // Mutable() yields an item.  Else, parse an unpacked recordio. Get() or
-  // Mutable() yields a block.
-  bool packed = false;
-
+struct ReaderOpts {
   // If non-null, this function is called for every block read. It is called
   // sequentially.
   //
   // TODO(saito) This guarantee allows efficient implementations.  Maybe relax
   // the guarantee of sequential invocation in a future.
-  std::unique_ptr<RecordIOTransformer> transformer;
+  std::unique_ptr<Transformer> transformer;
 };
 
 // Create a new reader that reads from "in". "in" remains owned by the caller,
 // and it must remain live while the reader is in use.
-std::unique_ptr<RecordIOReader> NewRecordIOReader(std::istream* in,
-                                                  RecordIOReaderOpts opts);
+std::unique_ptr<Reader> NewReader(std::istream* in, ReaderOpts opts);
 
 // Create a new reader for the given file. The options are auto-detected from
 // the path suffix. This function always returns a non-null reader. Errors
-// (e.g., nonexistent file) are reported through RecordIOReader::Error.
-std::unique_ptr<RecordIOReader> NewRecordIOReader(const std::string& path);
+// (e.g., nonexistent file) are reported through Reader::Error.
+std::unique_ptr<Reader> NewReader(const std::string& path);
 
 // Given a pathname, construct options for parsing the file contents.
-RecordIOReaderOpts DefaultRecordIOReaderOpts(const std::string& path);
+ReaderOpts DefaultReaderOpts(const std::string& path);
 
 // A transformer that uncompresses a block encoded in RFC 1951 format.
-std::unique_ptr<RecordIOTransformer> UncompressRecordIOTransformer();
+std::unique_ptr<Transformer> UncompressTransformer();
 
-// RecordIOWriter writes a recordio file. Recordio file format is defined below:
+// Writer writes a recordio file. Recordio file format is defined below:
 //
 // https://github.com/grailbio/base/blob/master/recordio/doc.go
 //
 // This class is not thread safe.
-class RecordIOWriter {
+class Writer {
  public:
   // Write a new record. Caller owns the data. The writer will not modify the
   // data, not even temporarily. Returns true if successful. Check Error() on
   // failure.
-  virtual bool Write(RecordIOSpan in) = 0;
+  virtual bool Write(ByteSpan in) = 0;
 
   // Close the writer and underlying resources. After Close(), callers must not
   // Write() anymore. Callers may still call Error(). To ensure the last block
@@ -121,31 +126,31 @@ class RecordIOWriter {
   // Get any error seen by the writer. It returns "" if there is no error.
   virtual std::string Error() = 0;
 
-  RecordIOWriter() = default;
-  RecordIOWriter(const RecordIOWriter&) = delete;
-  virtual ~RecordIOWriter();
+  Writer() = default;
+  Writer(const Writer&) = delete;
+  virtual ~Writer();
 };
 
-constexpr int64_t RecordIOWriterDefaultMaxPackedItems = 16 * 1024;
-constexpr int64_t RecordIOWriterDefaultMaxPackedBytes = 16 * 1024 * 1024;
+constexpr int64_t WriterDefaultMaxPackedItems = 16 * 1024;
+constexpr int64_t WriterDefaultMaxPackedBytes = 16 * 1024 * 1024;
 
-// RecordIOWriterIndexer defines a callback so users of RecordIOWriter can
-// build an index while RecordIOWriter is writing a recordio file. It only
+// WriterIndexer defines a callback so users of Writer can
+// build an index while Writer is writing a recordio file. It only
 // allows indexing blocks, not items, regardless of whether the writer is
 // creating a packed or unpacked file.
 // TODO(josh): Consider adding item indexing support (need to handle block
 // transformations).
-class RecordIOWriterIndexer {
+class WriterIndexer {
  public:
   // IndexBlock is invoked when the writer finishes writing a block starting
   // at start_offset. If any error occurs, implementation must return a
   // non-empty message.
   virtual std::string IndexBlock(uint64_t start_offset) = 0;
 
-  virtual ~RecordIOWriterIndexer();
+  virtual ~WriterIndexer();
 };
 
-struct RecordIOWriterOpts {
+struct WriterOpts {
   // If packed=true, then write the "packed" recordio file as defined in
   // https://github.com/grailbio/base/blob/master/recordio/doc.go, and callers
   // must pass one item to Write() on each invocation. Else, write an unpacked
@@ -155,37 +160,37 @@ struct RecordIOWriterOpts {
 
   // max_packed_items is the maximum number of items that will be packed into
   // a single block. This is ignored if packed == false.
-  int64_t max_packed_items = RecordIOWriterDefaultMaxPackedItems;
+  int64_t max_packed_items = WriterDefaultMaxPackedItems;
 
   // max_packed_bytes is the maximum total item size that will be packed into
   // a single block. This is ignored if packed == false. Note that size is
   // measured before transformation.
-  int64_t max_packed_bytes = RecordIOWriterDefaultMaxPackedBytes;
+  int64_t max_packed_bytes = WriterDefaultMaxPackedBytes;
 
   // If non-null, this function is called for every block write. Users should
   // provide the inverse transformation to recover the original block.
-  std::unique_ptr<RecordIOTransformer> transformer;
+  std::unique_ptr<Transformer> transformer;
 
   // If non-null, this function is called after every block write.
-  std::unique_ptr<RecordIOWriterIndexer> indexer;
+  std::unique_ptr<WriterIndexer> indexer;
 };
 
 // Create a new writer that writes to "out". "out" remains owned by the caller,
 // and it must remain live while the writer is in use.
-std::unique_ptr<RecordIOWriter> NewRecordIOWriter(std::ostream* out,
-                                                  RecordIOWriterOpts opts);
+std::unique_ptr<Writer> NewWriter(std::ostream* out, WriterOpts opts);
 
 // Create a new writer for the given file. The options are auto-detected from
 // the path suffix. This function always returns a non-null writer. Errors
-// (e.g., nonexistent file) are reported through RecordIOWriter::Error.
-std::unique_ptr<RecordIOWriter> NewRecordIOWriter(const std::string& path);
+// (e.g., nonexistent file) are reported through Writer::Error.
+std::unique_ptr<Writer> NewWriter(const std::string& path);
 
 // Given a pathname, construct options for parsing the file contents.
-RecordIOWriterOpts DefaultRecordIOWriterOpts(const std::string& path);
+WriterOpts DefaultWriterOpts(const std::string& path);
 
 // A transformer that compresses a block encoded in RFC 1951 format.
-std::unique_ptr<RecordIOTransformer> CompressRecordIOTransformer();
+std::unique_ptr<Transformer> CompressTransformer();
 
+}  // namespace recordio
 }  // namespace grail
 
 #endif  // LIB_RECORDIO_RECORDIO_H_

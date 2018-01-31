@@ -1,404 +1,26 @@
-#include <zlib.h>
-
-#include <array>
-#include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <vector>
 
 #include "./portable_endian.h"
 #include "lib/file/names.h"
+#include "lib/recordio/chunk.h"
+#include "lib/recordio/header.h"
 #include "lib/recordio/recordio.h"
-#include "lib/recordio/recordio_internal.h"
 
 namespace grail {
+namespace recordio {
 
-RecordIOReader::~RecordIOReader() {}
-RecordIOTransformer::~RecordIOTransformer() {}
+Reader::~Reader() {}
+Transformer::~Transformer() {}
 
-namespace {
-
-constexpr int SizeOffset = sizeof(RecordIOMagic);
-constexpr int CrcOffset = SizeOffset + 8;
-constexpr int DataOffset = CrcOffset + 4;
-// HeaderSize is the size in bytes of the recordio header.
-constexpr int HeaderSize = DataOffset;
-
-// MaxReadRecordSize defines a max size for a record when reading to avoid
-// crashes for unreasonable requests.
-constexpr uint64_t MaxReadRecordSize = 1ULL << 29;
-
-std::string RunTransformer(RecordIOTransformer* t, std::vector<char>* buf,
-                           int buf_off) {
-  RecordIOSpan in{buf->data() + buf_off, buf->size() - buf_off};
-  std::string err;
-  RecordIOSpan out = t->Transform(in, &err);
-  if (!err.empty()) return err;
-
-  buf->resize(out.size);
-  std::copy(out.data, out.data + out.size, buf->data());
-  return "";
-}
-
-class BinaryParser {
- public:
-  BinaryParser(const char* data, int bytes) : data_(data), bytes_(bytes) {}
-  const char* Data() { return data_; }
-
-  bool ReadLEUint64(uint64_t* v) {
-    if (bytes_ < static_cast<int>(sizeof *v)) return false;
-    memcpy(v, data_, sizeof *v);
-    *v = le64toh(*v);
-    data_ += sizeof *v;
-    bytes_ -= sizeof *v;
-    return true;
-  }
-
-  bool ReadLEUint32(uint32_t* v) {
-    if (bytes_ < static_cast<int>(sizeof *v)) return false;
-    memcpy(v, data_, sizeof *v);
-    *v = le32toh(*v);
-    data_ += sizeof *v;
-    bytes_ -= sizeof *v;
-    return true;
-  }
-
-  bool ReadUVarint(uint64_t* v) {
-    *v = 0;
-    int shift = 0;
-    int i = 0;
-    while (bytes_ > 0) {
-      auto b = *reinterpret_cast<const uint8_t*>(data_);
-      if (b < 0x80) {
-        if (i > 9 || (i == 9 && b > 1)) {
-          return false;
-        }
-        --bytes_;
-        ++data_;
-        *v |= (static_cast<uint64_t>(b) << shift);
-        return true;
-      }
-      *v |= static_cast<uint64_t>(b & 0x7f) << shift;
-      shift += 7;
-      --bytes_;
-      ++data_;
-      ++i;
-    }
-    return false;
-  }
-
- private:
-  const char* data_;
-  int bytes_;
-};
-
-// BaseReader implements a raw reader w/o any transformation.
-class BaseReader {
- public:
-  explicit BaseReader(std::istream* in, RecordIOMagic magic,
-                      std::unique_ptr<RecordIOCleanup> cleanup)
-      : in_(in), magic_(magic), cleanup_(std::move(cleanup)) {}
-
-  bool Scan() {
-    uint64_t size;
-    if (!ReadHeader(&size)) {
-      return false;
-    }
-    buf_.resize(size);
-    int n = ReadBytes(buf_.data(), size);
-    if (static_cast<uint64_t>(n) != size) {
-      std::ostringstream msg;
-      msg << "failed to read " << size << " byte body (found " << in_->gcount()
-          << " bytes";
-      SetError(msg.str());
-      return false;
-    }
-    return true;
-  }
-
-  std::vector<char>* Mutable() { return &buf_; }
-  std::string Error() { return err_; }
-  void SetError(const std::string& err) {
-    if (err_.empty()) {
-      err_ = err;
-    }
-  }
-
- private:
-  // Read the header part of the block from in_. On success, set *size to the
-  // length of the rest of the block.
-  bool ReadHeader(uint64_t* size) {
-    char header[HeaderSize];
-    int n = ReadBytes(header, sizeof(header));
-    if (n <= 0) {
-      if (!in_->eof()) {
-        std::ostringstream msg;
-        msg << "Failed to read file: " << strerror(errno);
-        SetError(msg.str());
-      }
-      return false;  // EOF
-    }
-    if (n != sizeof header) {
-      std::ostringstream msg;
-      msg << "Corrupt header; read " << n << " bytes, expect " << sizeof header
-          << " bytes";
-      SetError(msg.str());
-      return false;
-    }
-    if (memcmp(header, magic_.data(), sizeof magic_) != 0) {
-      SetError("wrong header magic");
-      return false;
-    }
-
-    BinaryParser parser(header + SizeOffset, sizeof(header) - SizeOffset);
-    if (!parser.ReadLEUint64(size)) {
-      SetError("header too small (size)");
-      return false;
-    }
-    uint32_t expected_crc;
-    if (!parser.ReadLEUint32(&expected_crc)) {
-      SetError("header too small (crc)");
-      return false;
-    }
-    auto actual_crc =
-        RecordIOCrc32(header + SizeOffset, CrcOffset - SizeOffset);
-    if (actual_crc != expected_crc) {
-      std::ostringstream msg;
-      msg << "corrupt header crc, expect " << expected_crc << " found "
-          << actual_crc;
-      SetError(msg.str());
-      return false;
-    }
-    if (*size > MaxReadRecordSize) {
-      std::ostringstream msg;
-      msg << "unreasonably large read record encountered: " << *size << " > "
-          << MaxReadRecordSize << " bytes";
-      SetError(msg.str());
-      return false;
-    }
-    return true;
-  }
-
-  // Read "bytes" byte from in_.
-  int ReadBytes(char* data, int bytes) {
-    int remaining = bytes;
-    while (remaining > 0) {
-      in_->read(data, remaining);
-      int n = in_->gcount();
-      if (n <= 0) {
-        break;
-      }
-      data += n;
-      remaining -= n;
-    }
-    return bytes - remaining;
-  }
-
-  std::istream* const in_;
-  const RecordIOMagic magic_;
-  const std::unique_ptr<RecordIOCleanup> cleanup_;
-  std::string err_;
-  std::vector<char> buf_;
-};
-
-// Implementation of an unpacked reader.
-class UnpackedReaderImpl : public RecordIOReader {
- public:
-  explicit UnpackedReaderImpl(std::istream* in,
-                              std::unique_ptr<RecordIOTransformer> transformer,
-                              std::unique_ptr<RecordIOCleanup> cleanup)
-      : r_(in, RecordIOMagicUnpacked, std::move(cleanup)),
-        transformer_(std::move(transformer)) {}
-
-  bool Scan() {
-    if (!r_.Scan()) return false;
-    block_ = std::move(*r_.Mutable());
-    if (transformer_ != nullptr) {
-      const std::string err = RunTransformer(transformer_.get(), &block_, 0);
-      if (!err.empty()) {
-        r_.SetError(err);
-        return false;
-      }
-    }
-    return true;
-  }
-
-  std::vector<char>* Mutable() { return &block_; }
-  RecordIOSpan Get() { return RecordIOSpan{block_.data(), block_.size()}; }
-  std::string Error() { return r_.Error(); }
-
- private:
-  BaseReader r_;  // Underlying unpacked reader.
-  const std::unique_ptr<RecordIOTransformer> transformer_;
-  std::vector<char> block_;  // Current rio block being read
-};
-
-// Implementation of a packed reader.
-class PackedReaderImpl : public RecordIOReader {
- public:
-  explicit PackedReaderImpl(std::istream* in,
-                            std::unique_ptr<RecordIOTransformer> transformer,
-                            std::unique_ptr<RecordIOCleanup> cleanup)
-      : r_(in, RecordIOMagicPacked, std::move(cleanup)),
-        transformer_(std::move(transformer)),
-        cur_item_(0) {}
-
-  bool Scan() {
-    ++cur_item_;
-    while (cur_item_ >= items_.size()) {
-      if (!ReadBlock()) return false;
-    }
-    return true;
-  }
-
-  std::vector<char>* Mutable() {
-    const RecordIOSpan span = Get();
-    tmp_.resize(span.size);
-    std::copy(span.data, span.data + span.size, tmp_.begin());
-    return &tmp_;
-  }
-
-  RecordIOSpan Get() {
-    const Item item = items_[cur_item_];
-    return RecordIOSpan{items_start_ + item.offset,
-                        static_cast<size_t>(item.size)};
-  }
-
-  std::string Error() { return r_.Error(); }
-
- private:
-  // Read and parse the next block from the underlying (unpacked) reader.
-  bool ReadBlock() {
-    cur_item_ = 0;
-    items_.clear();
-    if (!r_.Scan()) return false;
-
-    block_ = std::move(*r_.Mutable());
-    BinaryParser parser(block_.data(), block_.size());
-    uint32_t expected_crc;
-    if (!parser.ReadLEUint32(&expected_crc)) {
-      r_.SetError("invalid block header (crc)");
-      return false;
-    }
-    const char* crc_start = parser.Data();
-    uint64_t n_items;
-    if (!parser.ReadUVarint(&n_items)) {
-      r_.SetError("invalid block header (n_items)");
-      return false;
-    }
-    if (n_items <= 0 || n_items >= block_.size()) {
-      r_.SetError("invalid block header (n_items)");
-      return false;
-    }
-    for (uint32_t i = 0; i < n_items; i++) {
-      uint64_t item_size;
-      if (!parser.ReadUVarint(&item_size)) {
-        r_.SetError("invalid block header(item_size)");
-        return false;
-      }
-      Item item = {0, static_cast<int>(item_size)};
-      if (i > 0) {
-        item.offset = items_[i - 1].offset + items_[i - 1].size;
-      }
-      items_.push_back(item);
-    }
-    items_start_ = parser.Data();
-    const uint32_t actual_crc =
-        RecordIOCrc32(crc_start, items_start_ - crc_start);
-    if (actual_crc != expected_crc) {
-      r_.SetError("wrong crc");
-      return false;
-    }
-    const char* items_limit = nullptr;
-    if (transformer_ != nullptr) {
-      size_t off = items_start_ - block_.data();
-      const std::string err = RunTransformer(transformer_.get(), &block_, off);
-      if (!err.empty()) {
-        r_.SetError(err);
-        return false;
-      }
-      items_start_ = block_.data();
-    }
-    items_limit = block_.data() + block_.size();
-    if (items_.back().offset + items_.back().size !=
-        (items_limit - items_start_)) {
-      r_.SetError("junk at the end of block");
-      return false;
-    }
-    return true;
-  }
-
-  struct Item {
-    int offset;  // byte offset from items_start_
-    int size;    // byte size of the item
-  };
-  BaseReader r_;  // Underlying unpacked reader.
-  const std::unique_ptr<RecordIOTransformer> transformer_;
-  std::vector<char> block_;  // Current rio block being read
-  std::vector<Item> items_;  // Result of parsing the block_ metadata
-  const char* items_start_;  // Start of the payload part in block_.
-  size_t cur_item_;          // Indexes into items_.
-  std::vector<char> tmp_;    // For implementing Mutable().
-};
-
-class UncompressTransformer : public RecordIOTransformer {
-  RecordIOSpan Transform(RecordIOSpan in, std::string* err) {
-    err->clear();
-    z_stream stream;
-    memset(&stream, 0, sizeof stream);
-    int ret = inflateInit2(&stream, -15 /*RFC1951*/);
-    if (ret != Z_OK) {
-      std::ostringstream msg;
-      msg << "inflateInit failed(" << ret << ")";
-      *err = msg.str();
-      return RecordIOSpan{nullptr, 0};
-    }
-    if (tmp_.capacity() >= static_cast<size_t>(in.size) * 2) {
-      tmp_.resize(tmp_.capacity());
-    } else {
-      tmp_.resize(in.size * 2);
-    }
-    stream.avail_in = in.size;
-    stream.next_in =
-        const_cast<Bytef*>(reinterpret_cast<const Bytef*>(in.data));
-    stream.avail_out = tmp_.size();
-    stream.next_out = reinterpret_cast<Bytef*>(tmp_.data());
-    for (;;) {
-      ret = inflate(&stream, Z_NO_FLUSH);
-      if (ret != Z_OK && ret != Z_STREAM_END) {
-        std::ostringstream msg;
-        msg << "inflate failed(" << ret << ")";
-        *err = msg.str();
-        inflateEnd(&stream);
-        return RecordIOSpan{nullptr, 0};
-      }
-      if (ret == Z_STREAM_END) {
-        inflateEnd(&stream);
-        return RecordIOSpan{tmp_.data(), tmp_.size() - stream.avail_out};
-      }
-      size_t cur_size = tmp_.size();
-      tmp_.resize(cur_size * 2);
-      stream.avail_out = tmp_.size() - cur_size;
-      stream.next_out = reinterpret_cast<Bytef*>(tmp_.data() + cur_size);
-    }
-  }
-  std::vector<char> tmp_;
-};
-
-}  // namespace
-
-RecordIOReaderOpts DefaultRecordIOReaderOpts(const std::string& path) {
-  RecordIOReaderOpts r;
+ReaderOpts DefaultReaderOpts(const std::string& path) {
+  ReaderOpts r;
   switch (DetermineFileType(path)) {
-    case FileType::GrailRIO:
-      break;
-    case FileType::GrailRIOPacked:
-      r.packed = true;
-      break;
     case FileType::GrailRIOPackedCompressed:
-      r.packed = true;
-      r.transformer = UncompressRecordIOTransformer();
+      r.transformer = UncompressTransformer();
       break;
     default:
       // Punt. The reader will cause an error.
@@ -407,37 +29,217 @@ RecordIOReaderOpts DefaultRecordIOReaderOpts(const std::string& path) {
   return r;
 }
 
-std::unique_ptr<RecordIOReader> NewRecordIOReader(std::istream* in,
-                                                  RecordIOReaderOpts opts) {
-  if (opts.packed) {
-    return std::unique_ptr<RecordIOReader>(
-        new PackedReaderImpl(in, std::move(opts.transformer), nullptr));
-  } else {
-    return std::unique_ptr<RecordIOReader>(
-        new UnpackedReaderImpl(in, std::move(opts.transformer), nullptr));
+namespace internal {
+std::unique_ptr<Reader> NewLegacyPackedReader(
+    std::istream* in, std::unique_ptr<Transformer> transformer,
+    std::unique_ptr<Cleanup> cleanup);
+std::unique_ptr<Reader> NewLegacyUnpackedReader(
+    std::istream* in, std::unique_ptr<Transformer> transformer,
+    std::unique_ptr<Cleanup> cleanup);
+namespace {
+
+class ErrorReaderImpl : public Reader {
+ public:
+  explicit ErrorReaderImpl(std::string err) : err_(std::move(err)) {}
+  bool Scan() { return false; }
+  std::vector<uint8_t>* Mutable() { return nullptr; }
+  ByteSpan Get() { return ByteSpan{nullptr, 0}; }
+  std::string Error() { return err_; }
+  std::vector<HeaderEntry> Header() { return std::vector<HeaderEntry>(); }
+  ByteSpan Trailer() { return ByteSpan{nullptr, 0}; }
+
+ private:
+  std::string err_;
+};
+
+int ParseChunksToItems(const IoVec& iov, std::vector<std::vector<uint8_t>>* buf,
+                       ErrorReporter* err) {
+  ByteSpan data;
+  std::vector<uint8_t> tmp;
+  if (iov.size() == 0) {
+    return 0;
   }
+  data = iov[0];
+  if (iov.size() > 1) {
+    // TODO(saito) remove memcpy.
+    tmp = IoVecFlatten(iov);
+    data = ByteSpan(&tmp);
+  }
+  BinaryParser p(data.data(), data.size(), err);
+  uint64_t n = p.ReadUVarint();
+  std::vector<uint64_t> item_sizes;
+  for (size_t i = 0; i < n; i++) {
+    uint64_t size = p.ReadUVarint();
+    item_sizes.push_back(size);
+  }
+  for (size_t i = 0; i < n; i++) {
+    // TODO(saito) remove memcpy.
+    const uint64_t item_size = item_sizes[i];
+    const uint8_t* data = p.ReadBytes(item_size);
+    if (data == nullptr) return 0;
+    if (buf->size() <= i) {
+      buf->resize((i + 1) * 2);
+    }
+    (*buf)[i].resize(item_size);
+    memcpy((*buf)[i].data(), data, item_size);
+  }
+  return n;
 }
 
-std::unique_ptr<RecordIOReader> NewRecordIOReader(const std::string& path) {
-  class Closer : public RecordIOCleanup {
+class ReaderImpl : public Reader {
+ public:
+  ReaderImpl(std::istream* in, ReaderOpts opts, std::unique_ptr<Cleanup> closer)
+      : cr_(new ChunkReader(in, &err_)), closer_(std::move(closer)) {
+    readHeader();
+    int64_t cur_off;
+    err_.Set(Tell(in, &cur_off));
+    bool has_trailer;
+    err_.Set(HasTrailer(header_, &has_trailer));
+    if (!err_.Ok()) return;
+
+    if (has_trailer) {
+      readTrailer();
+    }
+    cr_->Seek(cur_off);
+    n_items_ = 0;
+    next_item_ = 0;
+  }
+
+  bool Scan() {
+    while (next_item_ >= n_items_) {
+      next_item_ = 0;
+      if (!ReadBlock()) {
+        return false;
+      }
+    }
+    item_ = &itembuf_[next_item_];
+    next_item_++;
+    return true;
+  }
+  // TODO(saito) this is unsafe. Change Mutable to return a vector<uint8_t>.
+  std::vector<uint8_t>* Mutable() { return item_; }
+  ByteSpan Get() { return ByteSpan{item_->data(), item_->size()}; }
+  std::string Error() { return err_.Err(); }
+  std::vector<HeaderEntry> Header() { return header_; }
+  ByteSpan Trailer() { return ByteSpan{nullptr, 0}; }
+
+ private:
+  void readHeader() {
+    std::vector<uint8_t>* payload;
+    if (!ReadSpecialBlock(MagicHeader, &payload)) {
+      return;
+    }
+    header_ = DecodeHeader(payload->data(), payload->size(), &err_);
+  }
+
+  void readTrailer() {
+    std::vector<uint8_t>* payload;
+    cr_->SeekLastBlock();
+    if (!ReadSpecialBlock(MagicTrailer, &payload)) {
+      return;
+    }
+    abort();
+  }
+
+  bool ReadBlock() {
+    if (!err_.Ok()) return false;
+    if (!cr_->Scan()) return false;
+    const Magic magic = cr_->GetMagic();
+    if (magic == MagicPacked) {
+      n_items_ = ParseChunksToItems(cr_->Chunks(), &itembuf_, &err_);
+      if (!err_.Ok()) return false;
+      next_item_ = 0;
+      return true;
+    }
+    if (magic == MagicTrailer) {  // EOF
+      return false;
+    }
+    std::ostringstream msg;
+    msg << "Bad magic: " << MagicDebugString(magic);
+    err_.Set(msg.str());
+    return false;
+  }
+
+  bool ReadSpecialBlock(const Magic expected_magic,
+                        std::vector<uint8_t>** payload) {
+    if (!cr_->Scan()) {
+      err_.Set("Failed to read trailer block");
+      return false;
+    }
+    const Magic magic = cr_->GetMagic();
+    if (magic != expected_magic) {
+      std::ostringstream msg;
+      msg << "Failed to read header block, got " << MagicDebugString(magic);
+      err_.Set(msg.str());
+      return false;
+    }
+    n_items_ = ParseChunksToItems(cr_->Chunks(), &itembuf_, &err_);
+    if (!err_.Ok()) return false;
+    if (n_items_ != 1) {
+      err_.Set("Wrong # of items in header block");
+      return false;
+    }
+    *payload = &itembuf_[0];
+    return true;
+  }
+
+ private:
+  ErrorReporter err_;
+  std::unique_ptr<ChunkReader> cr_;
+  std::unique_ptr<Cleanup> closer_;
+  int next_item_ = 0;
+  std::vector<uint8_t>* item_ = nullptr;
+
+  std::vector<std::vector<uint8_t>> itembuf_;
+  int n_items_ = -1;
+  std::vector<HeaderEntry> header_;
+};
+
+std::unique_ptr<Reader> NewReader(std::istream* in, ReaderOpts opts,
+                                  std::unique_ptr<Cleanup> closer) {
+  int64_t cur_off;
+  internal::Error err = Tell(in, &cur_off);
+  if (err != "") {
+    return std::unique_ptr<Reader>(new ErrorReaderImpl(err));
+  }
+  Magic magic;
+  err = ReadFull(in, magic.data(), magic.size());
+  if (err != "") {
+    return std::unique_ptr<Reader>(new ErrorReaderImpl(err));
+  }
+  err = AbsSeek(in, cur_off);
+  if (err != "") {
+    return std::unique_ptr<Reader>(new ErrorReaderImpl(err));
+  }
+  if (magic == MagicPacked) {
+    return NewLegacyPackedReader(in, std::move(opts.transformer),
+                                 std::move(closer));
+  }
+  if (magic == MagicUnpacked) {
+    return internal::NewLegacyUnpackedReader(in, std::move(opts.transformer),
+                                             std::move(closer));
+  }
+  return std::unique_ptr<Reader>(
+      new ReaderImpl(in, std::move(opts), std::move(closer)));
+}
+}  // namespace
+}  // namespace internal
+
+std::unique_ptr<Reader> NewReader(std::istream* in, ReaderOpts opts) {
+  return internal::NewReader(in, std::move(opts), nullptr);
+}
+
+std::unique_ptr<Reader> NewReader(const std::string& path) {
+  class Closer : public internal::Cleanup {
    public:
     std::ifstream in;
   };
-  auto opts = DefaultRecordIOReaderOpts(path);
-
+  auto opts = DefaultReaderOpts(path);
   std::unique_ptr<Closer> c(new Closer);
   c->in.open(path.c_str());
-  if (opts.packed) {
-    return std::unique_ptr<RecordIOReader>(new PackedReaderImpl(
-        &c->in, std::move(opts.transformer), std::move(c)));
-  } else {
-    return std::unique_ptr<RecordIOReader>(new UnpackedReaderImpl(
-        &c->in, std::move(opts.transformer), std::move(c)));
-  }
+  std::ifstream* in = &c->in;
+  return internal::NewReader(in, std::move(opts), std::move(c));
 }
 
-std::unique_ptr<RecordIOTransformer> UncompressRecordIOTransformer() {
-  return std::unique_ptr<RecordIOTransformer>(new UncompressTransformer());
-}
-
+}  // namespace recordio
 }  // namespace grail
