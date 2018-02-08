@@ -15,8 +15,10 @@ std::string MagicDebugString(const Magic& m) {
   int n = 0;
   s << "[";
   for (auto b : m) {
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%x", b);
     if (n++ > 0) s << ",";
-    s << b;
+    s << buf;
   }
   s << "]";
   return s.str();
@@ -137,7 +139,9 @@ int64_t BinaryParser::ReadVarint() {
 
 const uint8_t* BinaryParser::ReadBytes(int bytes) {
   if (bytes_ < bytes) {
-    err_->Set("failed to read bytes");
+    std::ostringstream msg;
+    msg << "ReadBytes: failed to read " << bytes << " bytes";
+    err_->Set(msg.str());
     return nullptr;
   }
   const uint8_t* p = data_;

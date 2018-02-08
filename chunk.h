@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -48,7 +49,9 @@ class ChunkReader {
   ErrorReporter* err_;
   Magic magic_;
   std::vector<ByteSpan> iov_;
-  ChunkBuf buf_;  // tmp
+
+  int next_free_chunk_;
+  std::vector<std::unique_ptr<ChunkBuf>> free_chunks_;
   ChunkReader(const ChunkReader&) = delete;
 };
 

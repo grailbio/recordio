@@ -41,12 +41,15 @@ namespace {
 class ErrorReaderImpl : public Reader {
  public:
   explicit ErrorReaderImpl(std::string err) : err_(std::move(err)) {}
-  bool Scan() { return false; }
-  std::vector<uint8_t>* Mutable() { return nullptr; }
-  ByteSpan Get() { return ByteSpan{nullptr, 0}; }
-  std::string Error() { return err_; }
-  std::vector<HeaderEntry> Header() { return std::vector<HeaderEntry>(); }
-  ByteSpan Trailer() { return ByteSpan{nullptr, 0}; }
+  bool Scan() override { return false; }
+  void Seek(ItemLocation loc) override {}
+  std::vector<uint8_t>* Mutable() override { return nullptr; }
+  ByteSpan Get() override { return ByteSpan{nullptr, 0}; }
+  std::string Error() override { return err_; }
+  std::vector<HeaderEntry> Header() override {
+    return std::vector<HeaderEntry>();
+  }
+  ByteSpan Trailer() override { return ByteSpan{nullptr, 0}; }
 
  private:
   std::string err_;
@@ -116,12 +119,28 @@ class ReaderImpl : public Reader {
     next_item_++;
     return true;
   }
+
+  void Seek(ItemLocation loc) {
+    cr_->Seek(loc.block);
+    if (!ReadBlock()) {
+      return;
+    }
+    if (loc.item < 0 || loc.item >= n_items_) {
+      std::ostringstream msg;
+      msg << "Invalid location (" << loc.block << "," << loc.item
+          << "): block has only %d items" << n_items_;
+      err_.Set(msg.str());
+      return;
+    }
+    next_item_ = loc.item;
+  }
+
   // TODO(saito) this is unsafe. Change Mutable to return a vector<uint8_t>.
-  std::vector<uint8_t>* Mutable() { return item_; }
-  ByteSpan Get() { return ByteSpan{item_->data(), item_->size()}; }
-  std::string Error() { return err_.Err(); }
-  std::vector<HeaderEntry> Header() { return header_; }
-  ByteSpan Trailer() { return ByteSpan{nullptr, 0}; }
+  std::vector<uint8_t>* Mutable() override { return item_; }
+  ByteSpan Get() override { return ByteSpan{item_->data(), item_->size()}; }
+  std::string Error() override { return err_.Err(); }
+  std::vector<HeaderEntry> Header() override { return header_; }
+  ByteSpan Trailer() override { return ByteSpan(&trailer_); }
 
  private:
   void readHeader() {
@@ -133,12 +152,11 @@ class ReaderImpl : public Reader {
   }
 
   void readTrailer() {
-    std::vector<uint8_t>* payload;
     cr_->SeekLastBlock();
-    if (!ReadSpecialBlock(MagicTrailer, &payload)) {
-      return;
+    std::vector<uint8_t>* payload;
+    if (ReadSpecialBlock(MagicTrailer, &payload)) {
+      trailer_ = *payload;
     }
-    abort();
   }
 
   bool ReadBlock() {
@@ -193,6 +211,7 @@ class ReaderImpl : public Reader {
   std::vector<std::vector<uint8_t>> itembuf_;
   int n_items_ = -1;
   std::vector<HeaderEntry> header_;
+  std::vector<uint8_t> trailer_;
 };
 
 std::unique_ptr<Reader> NewReader(std::istream* in, ReaderOpts opts,

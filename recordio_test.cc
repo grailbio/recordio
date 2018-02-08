@@ -56,7 +56,7 @@ void CheckContents(recordio::Reader* r) {
 
 void CheckHeader(recordio::Reader* r) {
   auto h = r->Header();
-  ASSERT_EQ(h.size(), 4);
+  ASSERT_TRUE(h.size() == 4 || h.size() == 5);
   ASSERT_EQ(h[0].key, "intflag");
   ASSERT_EQ(h[0].value.type, recordio::HeaderValue::INT);
   ASSERT_EQ(h[0].value.i, 12345);
@@ -65,13 +65,36 @@ void CheckHeader(recordio::Reader* r) {
   ASSERT_EQ(h[1].value.type, recordio::HeaderValue::UINT);
   ASSERT_EQ(h[1].value.u, 12345);
 
-  ASSERT_EQ(h[1].key, "strflag");
-  ASSERT_EQ(h[1].value.type, recordio::HeaderValue::STRING);
-  ASSERT_EQ(h[1].value.s, "Hello");
+  ASSERT_EQ(h[2].key, "strflag");
+  ASSERT_EQ(h[2].value.type, recordio::HeaderValue::STRING);
+  ASSERT_EQ(h[2].value.s, "Hello");
 
-  ASSERT_EQ(h[1].key, "boolflag");
-  ASSERT_EQ(h[1].value.type, recordio::HeaderValue::BOOL);
-  ASSERT_EQ(h[1].value.b, true);
+  ASSERT_EQ(h[3].key, "boolflag");
+  ASSERT_EQ(h[3].value.type, recordio::HeaderValue::BOOL);
+  ASSERT_EQ(h[3].value.b, true);
+
+  if (h.size() == 5) {
+    ASSERT_EQ(h[4].key, "trailer");
+    ASSERT_EQ(h[4].value.type, recordio::HeaderValue::BOOL);
+    ASSERT_EQ(h[4].value.b, true);
+  }
+}
+
+void CheckTrailer(recordio::Reader* r) {
+  auto trailer = r->Trailer();
+  std::string s(reinterpret_cast<const char*>(trailer.data()), trailer.size());
+  ASSERT_EQ("Trailer", s);
+}
+
+// Expect "data" to be present at offset "block", index "item".
+void CheckSeek(recordio::Reader* r, int64_t block, int item,
+               const std::string& expected) {
+  r->Seek({block, item});
+  ASSERT_TRUE(r->Scan());
+  ASSERT_EQ(r->Error(), "");
+  auto data = r->Get();
+  std::string s(reinterpret_cast<const char*>(data.data()), data.size());
+  ASSERT_EQ(s, expected);
 }
 
 TEST(Recordio, Read) {
@@ -79,6 +102,18 @@ TEST(Recordio, Read) {
   ASSERT_FALSE(in.fail());
   auto r = recordio::NewReader(&in, recordio::ReaderOpts{});
   CheckContents(r.get());
+}
+
+TEST(Recordio, ReadV2) {
+  std::ifstream in("lib/recordio/testdata/test.grail-rio2");
+  ASSERT_FALSE(in.fail());
+  auto r = recordio::NewReader(&in, recordio::ReaderOpts{});
+  CheckContents(r.get());
+  CheckHeader(r.get());
+  CheckTrailer(r.get());
+  CheckSeek(r.get(), 589824, 2, "GHIJKLMN");
+  CheckSeek(r.get(), 655360, 1, "LMNOPQRS");
+  CheckSeek(r.get(), 65536, 0, "BCDEFGHI");
 }
 
 std::string ReadFile(std::string filename) {

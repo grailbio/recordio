@@ -13,11 +13,12 @@ const int MaxChunkPayloadSize = internal::ChunkSize - ChunkHeaderSize;
 }  // namespace
 
 internal::ChunkReader::ChunkReader(std::istream* in, ErrorReporter* err)
-    : in_(in), err_(err), magic_(MagicInvalid) {}
+    : in_(in), err_(err), magic_(MagicInvalid), next_free_chunk_(0) {}
 
 bool internal::ChunkReader::Scan() {
   magic_ = MagicInvalid;
   iov_.clear();
+  next_free_chunk_ = 0;
   uint32_t total_chunks = 0;
   if (!err_->Ok()) {
     return false;
@@ -87,7 +88,8 @@ void internal::ChunkReader::SeekLastBlock() {
     err_->Set(msg.str());
     return;
   }
-  in_->seekg(-ChunkSize * (index + 1), in_->end);
+  off_t off = -ChunkSize * (static_cast<int>(index) + 1);
+  in_->seekg(off, in_->end);
   if (in_->fail()) {
     err_->Set("Failed to seek to the beginning of the trailer");
     return;
@@ -99,19 +101,24 @@ void internal::ChunkReader::Seek(int64_t off) { err_->Set(AbsSeek(in_, off)); }
 bool internal::ChunkReader::ReadChunk(Magic* magic, uint32_t* index,
                                       uint32_t* total, ChunkFlag* flag,
                                       ByteSpan* payload) {
-  const int buf_size = buf_.size();
-  int n = ReadBytes(in_, buf_.data(), buf_size);
+  while (next_free_chunk_ >= static_cast<int>(free_chunks_.size())) {
+    free_chunks_.push_back(std::unique_ptr<ChunkBuf>(new ChunkBuf));
+  }
+  ChunkBuf* buf = free_chunks_[next_free_chunk_].get();
+  next_free_chunk_++;
+  int n = ReadBytes(in_, buf->data(), ChunkSize);
   if (n == 0) {
+    std::cout << "READC: " << n << "\n";
     return false;
   }
-  if (n != buf_size) {
+  if (n != ChunkSize) {
     std::ostringstream msg;
-    msg << "Failed to read chunk, got " << n << " byte, expect " << buf_size
+    msg << "Failed to read chunk, got " << n << " byte, expect " << ChunkSize
         << "bytes: " << std::strerror(errno);
     err_->Set(msg.str());
     return false;
   }
-  BinaryParser header(buf_.data(), ChunkHeaderSize, err_);
+  BinaryParser header(buf->data(), ChunkHeaderSize, err_);
 
   *magic = *reinterpret_cast<const Magic*>(header.ReadBytes(sizeof(Magic)));
   const uint32_t expected_csum = header.ReadLEUint32();
@@ -129,9 +136,9 @@ bool internal::ChunkReader::ReadChunk(Magic* magic, uint32_t* index,
     return false;
   }
 
-  *payload = ByteSpan(buf_.data() + ChunkHeaderSize, size);
+  *payload = ByteSpan(buf->data() + ChunkHeaderSize, size);
   const uint32_t actual_csum =
-      Crc32(buf_.data() + 12, ChunkHeaderSize - 12 + size);
+      Crc32(buf->data() + 12, ChunkHeaderSize - 12 + size);
   if (expected_csum != actual_csum) {
     std::ostringstream msg;
     msg << "Chunk checksum mismatch, expect " << expected_csum << " got "

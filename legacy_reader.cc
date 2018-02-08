@@ -173,6 +173,7 @@ class UnpackedReaderImpl : public Reader {
 
   std::vector<uint8_t>* Mutable() { return &block_; }
   ByteSpan Get() { return ByteSpan{block_.data(), block_.size()}; }
+  void Seek(ItemLocation loc) override { err_.Set("Seek not supported"); }
   std::string Error() { return err_.Err(); }
   ByteSpan Trailer() { return ByteSpan{nullptr, 0}; }
 
@@ -193,7 +194,7 @@ class PackedReaderImpl : public Reader {
         transformer_(std::move(transformer)),
         cur_item_(0) {}
 
-  bool Scan() {
+  bool Scan() override {
     ++cur_item_;
     while (cur_item_ >= items_.size()) {
       if (!ReadBlock()) return false;
@@ -201,21 +202,24 @@ class PackedReaderImpl : public Reader {
     return true;
   }
 
-  std::vector<uint8_t>* Mutable() {
+  std::vector<uint8_t>* Mutable() override {
     const ByteSpan span = Get();
     tmp_.resize(span.size());
     std::copy(span.begin(), span.end(), tmp_.begin());
     return &tmp_;
   }
 
-  ByteSpan Get() {
+  ByteSpan Get() override {
     const Item item = items_[cur_item_];
     return ByteSpan{items_start_ + item.offset, static_cast<size_t>(item.size)};
   }
 
-  std::string Error() { return err_.Err(); }
-  std::vector<HeaderEntry> Header() { return std::vector<HeaderEntry>(); }
-  ByteSpan Trailer() { return ByteSpan{nullptr, 0}; }
+  void Seek(ItemLocation loc) override { err_.Set("Seek not supported"); }
+  std::string Error() override { return err_.Err(); }
+  std::vector<HeaderEntry> Header() override {
+    return std::vector<HeaderEntry>();
+  }
+  ByteSpan Trailer() override { return ByteSpan{nullptr, 0}; }
 
  private:
   // Read and parse the next block from the underlying (unpacked) reader.

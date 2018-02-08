@@ -22,6 +22,15 @@ namespace recordio {
 typedef internal::ByteSpan ByteSpan;
 typedef internal::IoVec IoVec;
 
+// ItemLocation identifies the location of an item in a recordio file.
+struct ItemLocation {
+  // Location of the first byte of the block within the file. Unit is bytes.
+  int64_t block;
+  // Index of the item within the block. The Nth item in the block (N=1,2,...)
+  // has value N-1.
+  int item;
+};
+
 // Class Reader reads a recordio file.
 //
 // This class is thread compatible.
@@ -45,6 +54,13 @@ class Reader {
   //
   // REQUIRES: The last call to Scan() returned true.
   virtual ByteSpan Get() = 0;
+
+  // Set up so that the next Scan() call causes the pointer to move to the given
+  // location.  On any error, Error() will be set.
+  //
+  // REQUIRES: loc must be one of the values passed to the Index callback during
+  // writes.
+  virtual void Seek(ItemLocation loc) = 0;
 
   // Get the current record. The caller may take ownership of the data by
   // swapping the contents. The record is invalidated on the next call to Scan
