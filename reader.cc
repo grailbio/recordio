@@ -108,7 +108,7 @@ class ReaderImpl : public Reader {
     next_item_ = 0;
   }
 
-  bool Scan() {
+  bool Scan() override {
     while (next_item_ >= n_items_) {
       next_item_ = 0;
       if (!ReadBlock()) {
@@ -120,7 +120,7 @@ class ReaderImpl : public Reader {
     return true;
   }
 
-  void Seek(ItemLocation loc) {
+  void Seek(ItemLocation loc) override {
     cr_->Seek(loc.block);
     if (!ReadBlock()) {
       return;

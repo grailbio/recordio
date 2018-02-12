@@ -156,9 +156,11 @@ class UnpackedReaderImpl : public Reader {
       : r_(in, internal::MagicUnpacked, std::move(cleanup), &err_),
         transformer_(std::move(transformer)) {}
 
-  std::vector<HeaderEntry> Header() { return std::vector<HeaderEntry>(); }
+  std::vector<HeaderEntry> Header() override {
+    return std::vector<HeaderEntry>();
+  }
 
-  bool Scan() {
+  bool Scan() override {
     if (!r_.Scan()) return false;
     block_ = std::move(*r_.Mutable());
     if (transformer_ != nullptr) {
@@ -171,11 +173,11 @@ class UnpackedReaderImpl : public Reader {
     return true;
   }
 
-  std::vector<uint8_t>* Mutable() { return &block_; }
-  ByteSpan Get() { return ByteSpan{block_.data(), block_.size()}; }
+  std::vector<uint8_t>* Mutable() override { return &block_; }
+  ByteSpan Get() override { return ByteSpan{block_.data(), block_.size()}; }
   void Seek(ItemLocation loc) override { err_.Set("Seek not supported"); }
-  std::string Error() { return err_.Err(); }
-  ByteSpan Trailer() { return ByteSpan{nullptr, 0}; }
+  std::string Error() override { return err_.Err(); }
+  ByteSpan Trailer() override { return ByteSpan{nullptr, 0}; }
 
  private:
   internal::ErrorReporter err_;

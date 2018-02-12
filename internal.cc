@@ -6,6 +6,8 @@
 #include <memory>
 #include <sstream>
 
+#include "./portable_endian.h"
+
 namespace grail {
 namespace recordio {
 namespace internal {
