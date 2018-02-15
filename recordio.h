@@ -185,10 +185,10 @@ struct WriterOpts {
 
   // If non-null, this function is called for every block write. Users should
   // provide the inverse transformation to recover the original block.
-  std::unique_ptr<Transformer> transformer;
+  std::unique_ptr<Transformer> transformer = nullptr;
 
   // If non-null, this function is called after every block write.
-  std::unique_ptr<WriterIndexer> indexer;
+  std::unique_ptr<WriterIndexer> indexer = nullptr;
 };
 
 // Create a new writer that writes to "out". "out" remains owned by the caller,
