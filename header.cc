@@ -8,6 +8,7 @@ namespace grail {
 namespace recordio {
 
 const char* const kKeyTrailer = "trailer";
+const char* const kKeyTransformer = "transformer";
 namespace {
 
 HeaderValue ReadValue(internal::BinaryParser* parser) {

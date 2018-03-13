@@ -29,6 +29,9 @@ struct HeaderEntry {
 // BOOL.
 extern const char* const kKeyTrailer;
 
+// Key "transformer". Sets the list of transformers for each block.
+extern const char* const kKeyTransformer;
+
 namespace internal {
 class ErrorReporter;
 

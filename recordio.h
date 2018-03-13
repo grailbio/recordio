@@ -19,8 +19,9 @@
 
 namespace grail {
 namespace recordio {
-typedef internal::ByteSpan ByteSpan;
-typedef internal::IoVec IoVec;
+using ByteSpan = internal::ByteSpan;
+using IoVec = internal::IoVec;
+using Error = internal::Error;
 
 // ItemLocation identifies the location of an item in a recordio file.
 struct ItemLocation {
@@ -78,21 +79,21 @@ class Reader {
   virtual ByteSpan Trailer() = 0;
 
   // Get any error seen by the reader. It returns "" if there is no error.
-  virtual std::string Error() = 0;
+  virtual Error GetError() = 0;
 
   Reader() = default;
   Reader(const Reader&) = delete;
   virtual ~Reader();
 };
 
-// Transformer is a closure invoked after reading a block.
+// Transformer is invoked to (un)compress or (un)encrypt a block.
 class Transformer {
  public:
   // Called on on every block read. "in" holds the data read from the file, and
   // this function should return another span. The span contents are owned by
   // this object, and it may be destroyed on the next call to Transform.  On
   // error, this function should set a nonempty *error.
-  virtual IoVec Transform(IoVec in, std::string* error) = 0;
+  virtual Error Transform(IoVec in, IoVec* out) = 0;
   Transformer() = default;
   Transformer(const Transformer&) = delete;
   ~Transformer();
@@ -104,7 +105,7 @@ struct ReaderOpts {
   //
   // TODO(saito) This guarantee allows efficient implementations.  Maybe relax
   // the guarantee of sequential invocation in a future.
-  std::unique_ptr<Transformer> transformer;
+  std::unique_ptr<Transformer> legacy_transformer;
 };
 
 // Create a new reader that reads from "in". "in" remains owned by the caller,
@@ -116,11 +117,32 @@ std::unique_ptr<Reader> NewReader(std::istream* in, ReaderOpts opts);
 // (e.g., nonexistent file) are reported through Reader::Error.
 std::unique_ptr<Reader> NewReader(const std::string& path);
 
-// Given a pathname, construct options for parsing the file contents.
-ReaderOpts DefaultReaderOpts(const std::string& path);
+// Register callbacks to create a transformer and a reverse transformer.  Name
+// is a string such as "flate", "zstd". The transformer_factory should create a
+// closure that takes an iovec and produces another iovec suitable for storing
+// at rest. The untransformer_factory should create a closure that does reverse.
+//
+// The transformer factory is invoked by
+// the writer, and the untransformer factory is invoked by the reader.
+//
+// This function is usually invoked when the process starts.
+void RegisterTransformer(
+    const std::string& name,
+    const std::function<Error(const std::string& args,
+                              std::unique_ptr<Transformer>* tr)>&
+        transformer_factory,
+    const std::function<Error(const std::string& args,
+                              std::unique_ptr<Transformer>* tr)>&
+        untransformer_factory);
 
-// A transformer that uncompresses a block encoded in RFC 1951 format.
-std::unique_ptr<Transformer> UncompressTransformer();
+// Given string such as "flate 5", create a transformer. The transformer
+// ("flate" in this example) must be registered already.
+Error GetTransformer(const std::vector<std::string>& names,
+                     std::unique_ptr<Transformer>* tr);
+// Given string such as "flate 5", create a reverse transformer. The transformer
+// ("flate" in this example) must be registered already.
+Error GetUntransformer(const std::vector<std::string>& names,
+                       std::unique_ptr<Transformer>* tr);
 
 // Writer writes a recordio file. Recordio file format is defined below:
 //
@@ -140,7 +162,7 @@ class Writer {
   virtual bool Close() = 0;
 
   // Get any error seen by the writer. It returns "" if there is no error.
-  virtual std::string Error() = 0;
+  virtual Error GetError() = 0;
 
   Writer() = default;
   Writer(const Writer&) = delete;
@@ -161,10 +183,14 @@ class WriterIndexer {
   // IndexBlock is invoked when the writer finishes writing a block starting
   // at start_offset. If any error occurs, implementation must return a
   // non-empty message.
-  virtual std::string IndexBlock(uint64_t start_offset) = 0;
+  virtual Error IndexBlock(uint64_t start_offset) = 0;
 
   virtual ~WriterIndexer();
 };
+
+// Caution: The writer only supports the V1 format.
+//
+// TODO(saito) Support V2.
 
 struct WriterOpts {
   // If packed=true, then write the "packed" recordio file as defined in
@@ -203,8 +229,18 @@ std::unique_ptr<Writer> NewWriter(const std::string& path);
 // Given a pathname, construct options for parsing the file contents.
 WriterOpts DefaultWriterOpts(const std::string& path);
 
+//
+//  Following definitions are deprecated. Don't use in new code.
+//
+
+// Given a pathname, construct options for parsing the file contents.
+ReaderOpts DefaultReaderOpts(const std::string& path);
+
+// A transformer that uncompresses a block encoded in RFC 1951 format.
+std::unique_ptr<Transformer> UnflateTransformer();
+
 // A transformer that compresses a block encoded in RFC 1951 format.
-std::unique_ptr<Transformer> CompressTransformer();
+std::unique_ptr<Transformer> FlateTransformer();
 
 }  // namespace recordio
 }  // namespace grail

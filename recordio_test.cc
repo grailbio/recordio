@@ -24,13 +24,18 @@ std::string Str(recordio::Reader* r) {
 }
 
 const int TestBlockCount = 128;
+const int TestRecordSize = 8;
+std::string* record_template;
 
 std::string TestBlock(int n) {
-  const std::string str =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-  const int record_size = 8;
-  const int start_index = n % (str.size() - record_size + 1);
-  return str.substr(start_index, record_size);
+  if (record_template == nullptr) {
+    record_template = new std::string;
+    for (int i = 0; i < TestRecordSize * 8; i++) {
+      record_template->append(1, '0' + (i % 64));
+    }
+  }
+  const int start_index = n % (record_template->size() - TestRecordSize + 1);
+  return record_template->substr(start_index, TestRecordSize);
 }
 
 void WriteContentsAndClose(recordio::Writer* w) {
@@ -46,11 +51,11 @@ void CheckContents(recordio::Reader* r) {
   int n = 0;
   while (r->Scan()) {
     const std::string expected = TestBlock(n);
-    EXPECT_EQ(expected, Str(r));
-    EXPECT_EQ("", r->Error());
+    ASSERT_EQ(expected, Str(r));
+    ASSERT_EQ("", r->GetError());
     n++;
   }
-  EXPECT_EQ("", r->Error());
+  EXPECT_EQ("", r->GetError());
   EXPECT_EQ(TestBlockCount, n);
 }
 
@@ -91,7 +96,7 @@ void CheckSeek(recordio::Reader* r, int64_t block, int item,
                const std::string& expected) {
   r->Seek({block, item});
   ASSERT_TRUE(r->Scan());
-  ASSERT_EQ(r->Error(), "");
+  ASSERT_EQ(r->GetError(), "");
   auto data = r->Get();
   std::string s(reinterpret_cast<const char*>(data.data()), data.size());
   ASSERT_EQ(s, expected);
@@ -111,9 +116,8 @@ TEST(Recordio, ReadV2) {
   CheckContents(r.get());
   CheckHeader(r.get());
   CheckTrailer(r.get());
-  CheckSeek(r.get(), 589824, 2, "GHIJKLMN");
-  CheckSeek(r.get(), 655360, 1, "LMNOPQRS");
-  CheckSeek(r.get(), 65536, 0, "BCDEFGHI");
+  CheckSeek(r.get(), 32768, 0, "01234567");
+  CheckSeek(r.get(), 65536, 26, "KLMNOPQR");
 }
 
 std::string ReadFile(std::string filename) {
@@ -250,10 +254,15 @@ TEST(Recordio, Read2) {
   CheckContents(r.get());
 }
 
+TEST(Recordio, Read2Flate) {
+  auto r = recordio::NewReader("lib/recordio/testdata/test.grail-rio2-flate");
+  CheckContents(r.get());
+}
+
 TEST(Recordio, ReadError) {
   auto r = recordio::NewReader("/non/existent/file");
   EXPECT_FALSE(r->Scan());
-  EXPECT_THAT(r->Error(), ::testing::HasSubstr("No such file or directory"));
+  EXPECT_THAT(r->GetError(), ::testing::HasSubstr("No such file or directory"));
 }
 
 void DoCompressTest(const std::string& str, int n_iov) {
@@ -261,7 +270,7 @@ void DoCompressTest(const std::string& str, int n_iov) {
 
   std::vector<recordio::ByteSpan> in(n_iov);
   int chunk_len = str.size() / n_iov;
-  auto compressor = recordio::CompressTransformer();
+  auto compressor = recordio::FlateTransformer();
 
   int start = 0;
   for (int i = 0; i < n_iov; i++) {
@@ -270,14 +279,15 @@ void DoCompressTest(const std::string& str, int n_iov) {
         reinterpret_cast<const uint8_t*>(str.data()) + start, len);
     start += len;
   }
-  const recordio::IoVec compressed =
-      compressor->Transform(recordio::IoVec{&in}, &err);
-  ASSERT_EQ(std::string(""), err);
+  recordio::IoVec compressed;
+  ASSERT_EQ(std::string(""),
+            compressor->Transform(recordio::IoVec{&in}, &compressed));
   ASSERT_GT(recordio::internal::IoVecSize(compressed), 0);
 
-  auto uncompressor = recordio::UncompressTransformer();
-  auto uncompressed = uncompressor->Transform(compressed, &err);
-  ASSERT_EQ(std::string(""), err);
+  auto uncompressor = recordio::UnflateTransformer();
+  recordio::IoVec uncompressed;
+  ASSERT_EQ(std::string(""),
+            uncompressor->Transform(compressed, &uncompressed));
   ASSERT_GT(recordio::internal::IoVecSize(uncompressed), 0);
   auto flattened = recordio::internal::IoVecFlatten(uncompressed);
   const std::string str2(reinterpret_cast<const char*>(flattened.data()),

@@ -3,12 +3,14 @@ cc_library(
     srcs = [
         "chunk.cc",
         "chunk.h",
+        "flate.cc",
         "header.cc",
         "header.h",
         "internal.cc",
         "internal.h",
         "legacy_reader.cc",
         "reader.cc",
+        "registry.cc",
         "writer.cc",
     ],
     hdrs = [

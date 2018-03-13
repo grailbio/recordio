@@ -1,5 +1,3 @@
-#include <zlib.h>
-
 #include <array>
 #include <cstring>
 #include <fstream>
@@ -86,7 +84,7 @@ class BaseWriter {
     return true;
   }
 
-  std::string Error() { return err_; }
+  Error GetError() { return err_; }
 
   void SetError(const std::string& err) {
     if (err_.empty()) {
@@ -155,9 +153,9 @@ class UnpackedWriterImpl : public Writer {
 
   bool Write(ByteSpan in) {
     if (transformer_ != nullptr) {
-      std::string err;
       IoVec iov(&in, 1);
-      IoVec out = transformer_->Transform(iov, &err);
+      IoVec out;
+      Error err = transformer_->Transform(iov, &out);
       if (!err.empty()) {
         r_.SetError(err);
         return false;
@@ -173,7 +171,7 @@ class UnpackedWriterImpl : public Writer {
 
   bool Close() { return r_.Close(); }
 
-  std::string Error() { return r_.Error(); }
+  Error GetError() { return r_.GetError(); }
 
  private:
   BaseWriter r_;  // Underlying unpacked writer.
@@ -278,7 +276,7 @@ class PackedWriterImpl : public Writer {
     return r_.Close();
   }
 
-  std::string Error() { return r_.Error(); }
+  Error GetError() { return r_.GetError(); }
 
  private:
   bool Flush() {
@@ -287,9 +285,9 @@ class PackedWriterImpl : public Writer {
 
     ByteSpan transformed = {buffered_items_.data(), buffered_items_.size()};
     if (transformer_ != nullptr) {
-      std::string err;
       IoVec iov(&transformed, 1);
-      IoVec out = transformer_->Transform(iov, &err);
+      IoVec out;
+      internal::Error err = transformer_->Transform(iov, &out);
       if (!err.empty()) {
         r_.SetError(err);
         return false;
@@ -320,58 +318,6 @@ class PackedWriterImpl : public Writer {
 
 }  // namespace
 
-class CompressTransformerImpl : public Transformer {
-  IoVec Transform(IoVec in_iov, std::string* err) {
-    err->clear();
-    z_stream stream;
-    memset(&stream, 0, sizeof stream);
-    int ret = deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
-                           -15 /*RFC1951*/, MAX_MEM_LEVEL, Z_DEFAULT_STRATEGY);
-    if (ret != Z_OK) {
-      std::ostringstream msg;
-      msg << "deflateInit failed(" << ret << ")";
-      *err = msg.str();
-      return IoVec();
-    }
-
-    const size_t in_bytes = IoVecSize(in_iov);
-    tmp_.resize(deflateBound(&stream, in_bytes));
-    stream.avail_out = tmp_.size();
-    stream.next_out = reinterpret_cast<Bytef*>(tmp_.data());
-    ret = Z_STREAM_END;
-    size_t iov_idx = 0;
-    for (iov_idx = 0; iov_idx < in_iov.size(); ++iov_idx) {
-      stream.avail_in = in_iov[iov_idx].size();
-      stream.next_in = const_cast<Bytef*>(
-          reinterpret_cast<const Bytef*>(in_iov[iov_idx].data()));
-      int flag = (iov_idx == in_iov.size() - 1) ? Z_FINISH : Z_NO_FLUSH;
-      ret = deflate(&stream, flag);
-      if (ret != Z_OK && ret != Z_STREAM_END) {
-        std::ostringstream msg;
-        msg << "deflate failed(" << ret << ")";
-        *err = msg.str();
-        deflateEnd(&stream);
-        return IoVec();
-      }
-      if (stream.avail_in != 0) {
-        abort();
-      }
-    }
-    if (stream.avail_in != 0 || iov_idx != in_iov.size()) {
-      std::ostringstream msg;
-      msg << "found trailing junk during deflate";
-      *err = msg.str();
-      return IoVec();
-    }
-    deflateEnd(&stream);
-    tmp_.resize(tmp_.size() - stream.avail_out);
-    tmp_span_ = ByteSpan(&tmp_);
-    return IoVec(&tmp_span_, 1);
-  }
-  ByteSpan tmp_span_;
-  std::vector<uint8_t> tmp_;
-};
-
 WriterOpts DefaultWriterOpts(const std::string& path) {
   WriterOpts r;
   switch (DetermineFileType(path)) {
@@ -382,7 +328,7 @@ WriterOpts DefaultWriterOpts(const std::string& path) {
       break;
     case FileType::GrailRIOPackedCompressed:
       r.packed = true;
-      r.transformer = CompressTransformer();
+      r.transformer = FlateTransformer();
       break;
     default:
       // Punt. The writer will cause an error.
@@ -416,10 +362,6 @@ std::unique_ptr<Writer> NewWriter(const std::string& path) {
         new UnpackedWriterImpl(&c->out, std::move(opts.transformer),
                                std::move(opts.indexer), std::move(c)));
   }
-}
-
-std::unique_ptr<Transformer> CompressTransformer() {
-  return std::unique_ptr<Transformer>(new CompressTransformerImpl());
 }
 
 }  // namespace recordio

@@ -20,7 +20,7 @@ ReaderOpts DefaultReaderOpts(const std::string& path) {
   ReaderOpts r;
   switch (DetermineFileType(path)) {
     case FileType::GrailRIOPackedCompressed:
-      r.transformer = UncompressTransformer();
+      r.legacy_transformer = UnflateTransformer();
       break;
     default:
       // Punt. The reader will cause an error.
@@ -45,18 +45,24 @@ class ErrorReaderImpl : public Reader {
   void Seek(ItemLocation loc) override {}
   std::vector<uint8_t>* Mutable() override { return nullptr; }
   ByteSpan Get() override { return ByteSpan{nullptr, 0}; }
-  std::string Error() override { return err_; }
+  Error GetError() override { return err_; }
   std::vector<HeaderEntry> Header() override {
     return std::vector<HeaderEntry>();
   }
   ByteSpan Trailer() override { return ByteSpan{nullptr, 0}; }
 
  private:
-  std::string err_;
+  Error err_;
 };
 
-int ParseChunksToItems(const IoVec& iov, std::vector<std::vector<uint8_t>>* buf,
+int ParseChunksToItems(const IoVec& raw_iov, Transformer* tr,
+                       std::vector<std::vector<uint8_t>>* buf,
                        ErrorReporter* err) {
+  IoVec iov = raw_iov;
+  if (tr != nullptr) {
+    err->Set(tr->Transform(raw_iov, &iov));
+    if (!err->Ok()) return 0;
+  }
   ByteSpan data;
   std::vector<uint8_t> tmp;
   if (iov.size() == 0) {
@@ -87,7 +93,7 @@ int ParseChunksToItems(const IoVec& iov, std::vector<std::vector<uint8_t>>* buf,
     memcpy((*buf)[i].data(), data, item_size);
   }
   return n;
-}
+}  // namespace
 
 class ReaderImpl : public Reader {
  public:
@@ -138,7 +144,7 @@ class ReaderImpl : public Reader {
   // TODO(saito) this is unsafe. Change Mutable to return a vector<uint8_t>.
   std::vector<uint8_t>* Mutable() override { return item_; }
   ByteSpan Get() override { return ByteSpan{item_->data(), item_->size()}; }
-  std::string Error() override { return err_.Err(); }
+  Error GetError() override { return err_.Err(); }
   std::vector<HeaderEntry> Header() override { return header_; }
   ByteSpan Trailer() override { return ByteSpan(&trailer_); }
 
@@ -149,6 +155,20 @@ class ReaderImpl : public Reader {
       return;
     }
     header_ = DecodeHeader(payload->data(), payload->size(), &err_);
+    std::vector<std::string> transformers;
+    for (const HeaderEntry& e : header_) {
+      if (e.key == kKeyTransformer) {
+        if (e.value.type != HeaderValue::STRING) {
+          std::ostringstream msg;
+          msg << "Wrong type for transformer: " << e.value.type;
+          err_.Set(msg.str());
+          return;
+        } else {
+          transformers.push_back(e.value.s);
+        }
+      }
+    }
+    err_.Set(GetUntransformer(transformers, &untransformer_));
   }
 
   void readTrailer() {
@@ -163,8 +183,10 @@ class ReaderImpl : public Reader {
     if (!err_.Ok()) return false;
     if (!cr_->Scan()) return false;
     const Magic magic = cr_->GetMagic();
+
     if (magic == MagicPacked) {
-      n_items_ = ParseChunksToItems(cr_->Chunks(), &itembuf_, &err_);
+      n_items_ = ParseChunksToItems(cr_->Chunks(), untransformer_.get(),
+                                    &itembuf_, &err_);
       if (!err_.Ok()) return false;
       next_item_ = 0;
       return true;
@@ -191,7 +213,8 @@ class ReaderImpl : public Reader {
       err_.Set(msg.str());
       return false;
     }
-    n_items_ = ParseChunksToItems(cr_->Chunks(), &itembuf_, &err_);
+    n_items_ = ParseChunksToItems(cr_->Chunks(), untransformer_.get(),
+                                  &itembuf_, &err_);
     if (!err_.Ok()) return false;
     if (n_items_ != 1) {
       err_.Set("Wrong # of items in header block");
@@ -212,6 +235,7 @@ class ReaderImpl : public Reader {
   int n_items_ = -1;
   std::vector<HeaderEntry> header_;
   std::vector<uint8_t> trailer_;
+  std::unique_ptr<Transformer> untransformer_;
 };
 
 std::unique_ptr<Reader> NewReader(std::istream* in, ReaderOpts opts,
@@ -231,12 +255,12 @@ std::unique_ptr<Reader> NewReader(std::istream* in, ReaderOpts opts,
     return std::unique_ptr<Reader>(new ErrorReaderImpl(err));
   }
   if (magic == MagicPacked) {
-    return NewLegacyPackedReader(in, std::move(opts.transformer),
+    return NewLegacyPackedReader(in, std::move(opts.legacy_transformer),
                                  std::move(closer));
   }
   if (magic == MagicUnpacked) {
-    return internal::NewLegacyUnpackedReader(in, std::move(opts.transformer),
-                                             std::move(closer));
+    return internal::NewLegacyUnpackedReader(
+        in, std::move(opts.legacy_transformer), std::move(closer));
   }
   return std::unique_ptr<Reader>(
       new ReaderImpl(in, std::move(opts), std::move(closer)));

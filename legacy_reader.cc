@@ -1,5 +1,3 @@
-#include <zlib.h>
-
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -30,9 +28,8 @@ internal::Error RunTransformer(Transformer* t, std::vector<uint8_t>* buf,
                                int buf_off) {
   ByteSpan span{buf->data() + buf_off, buf->size() - buf_off};
   IoVec iov(&span, 1);
-  internal::Error err;
-
-  IoVec out = t->Transform(iov, &err);
+  IoVec out;
+  internal::Error err = t->Transform(iov, &out);
   if (!err.empty()) return err;
   buf->resize(IoVecSize(out));
   size_t n = 0;
@@ -176,7 +173,7 @@ class UnpackedReaderImpl : public Reader {
   std::vector<uint8_t>* Mutable() override { return &block_; }
   ByteSpan Get() override { return ByteSpan{block_.data(), block_.size()}; }
   void Seek(ItemLocation loc) override { err_.Set("Seek not supported"); }
-  std::string Error() override { return err_.Err(); }
+  std::string GetError() override { return err_.Err(); }
   ByteSpan Trailer() override { return ByteSpan{nullptr, 0}; }
 
  private:
@@ -217,7 +214,7 @@ class PackedReaderImpl : public Reader {
   }
 
   void Seek(ItemLocation loc) override { err_.Set("Seek not supported"); }
-  std::string Error() override { return err_.Err(); }
+  Error GetError() override { return err_.Err(); }
   std::vector<HeaderEntry> Header() override {
     return std::vector<HeaderEntry>();
   }
@@ -287,73 +284,6 @@ class PackedReaderImpl : public Reader {
   size_t cur_item_;             // Indexes into items_.
   std::vector<uint8_t> tmp_;    // For implementing Mutable().
 };
-
-class UncompressTransformerImpl : public Transformer {
-  IoVec Transform(IoVec in_iov, std::string* err) {
-    err->clear();
-    z_stream stream;
-    memset(&stream, 0, sizeof stream);
-    int ret = inflateInit2(&stream, -15 /*RFC1951*/);
-    if (ret != Z_OK) {
-      std::ostringstream msg;
-      msg << "inflateInit failed(" << ret << ")";
-      *err = msg.str();
-      return IoVec();
-    }
-    const size_t in_bytes = IoVecSize(in_iov);
-    if (tmp_.capacity() >= in_bytes * 2) {
-      tmp_.resize(tmp_.capacity());
-    } else {
-      tmp_.resize(in_bytes);
-    }
-    stream.avail_out = tmp_.size();
-    stream.next_out = tmp_.data();
-    ret = Z_STREAM_END;
-    size_t iov_idx = 0;
-    for (iov_idx = 0; iov_idx < in_iov.size(); ++iov_idx) {
-      stream.avail_in = in_iov[iov_idx].size();
-      stream.next_in = const_cast<Bytef*>(in_iov[iov_idx].data());
-      for (;;) {
-        ret = inflate(&stream, Z_NO_FLUSH);
-        if (ret != Z_OK && ret != Z_STREAM_END) {
-          std::ostringstream msg;
-          msg << "inflate failed(" << ret << ")";
-          *err = msg.str();
-          inflateEnd(&stream);
-          return IoVec();
-        }
-        if (ret == Z_STREAM_END || stream.avail_in == 0) {
-          break;
-        }
-        if (stream.avail_out == 0) {
-          size_t cur_size = tmp_.size();
-          tmp_.resize(cur_size * 2);
-          stream.avail_out = tmp_.size() - cur_size;
-          stream.next_out = tmp_.data() + cur_size;
-          continue;
-        }
-        abort();  // shouldn't happen.
-      }
-      if (ret == Z_STREAM_END) {
-        iov_idx++;
-        break;
-      }
-    }
-    if (stream.avail_in != 0 || iov_idx != in_iov.size()) {
-      std::ostringstream msg;
-      msg << "found trailing junk during inflate";
-      *err = msg.str();
-      return IoVec();
-    }
-    inflateEnd(&stream);
-
-    tmp_span_ = ByteSpan(tmp_.data(), tmp_.size() - stream.avail_out);
-    return IoVec(&tmp_span_, 1);
-  }
-
-  ByteSpan tmp_span_;
-  std::vector<uint8_t> tmp_;
-};
 }  // namespace
 
 namespace internal {
@@ -371,10 +301,6 @@ std::unique_ptr<Reader> NewLegacyUnpackedReader(
       new UnpackedReaderImpl(in, std::move(transformer), std::move(cleanup)));
 }
 }  // namespace internal
-
-std::unique_ptr<Transformer> UncompressTransformer() {
-  return std::unique_ptr<Transformer>(new UncompressTransformerImpl());
-}
 
 }  // namespace recordio
 }  // namespace grail
