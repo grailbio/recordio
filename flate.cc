@@ -2,6 +2,7 @@
 #include <iostream>
 #include <mutex>
 #include <regex>
+#include <sstream>
 #include <unordered_map>
 
 #include "lib/recordio/recordio.h"
