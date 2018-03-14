@@ -16,6 +16,7 @@ cc_library(
     hdrs = [
         "recordio.h",
     ],
+    copts = ["-fPIC"],
     linkopts = ["-lz"],
     visibility = ["//visibility:public"],
     deps = [
