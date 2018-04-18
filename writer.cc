@@ -19,7 +19,7 @@ WriterIndexer::~WriterIndexer() {}
 
 namespace {
 
-class FileCloser : public internal::Cleanup {
+class FileCloser {
  public:
   bool Close() {
     out.close();

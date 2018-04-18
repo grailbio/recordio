@@ -1,8 +1,13 @@
+#include <fcntl.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <random>
@@ -103,16 +108,14 @@ void CheckSeek(recordio::Reader* r, int64_t block, int item,
 }
 
 TEST(Recordio, Read) {
-  std::ifstream in("lib/recordio/testdata/test.grail-rio");
-  ASSERT_FALSE(in.fail());
-  auto r = recordio::NewReader(&in, recordio::ReaderOpts{});
+  std::string path = "lib/recordio/testdata/test.grail-rio";
+  auto r = recordio::NewReader(path);
   CheckContents(r.get());
 }
 
 TEST(Recordio, ReadV2) {
-  std::ifstream in("lib/recordio/testdata/test.grail-rio2");
-  ASSERT_FALSE(in.fail());
-  auto r = recordio::NewReader(&in, recordio::ReaderOpts{});
+  std::string path = "lib/recordio/testdata/test.grail-rio2";
+  auto r = recordio::NewReader(path);
   CheckContents(r.get());
   CheckHeader(r.get());
   CheckTrailer(r.get());
@@ -225,11 +228,12 @@ TEST(Recordio, WriteIndex) {
   // read a few blocks, and check their contents. This also demonstrates how to
   // read a recordio file concurrently.
   for (int block = 0; block < TestBlockCount;) {
-    std::ifstream in(filename);
-    in.seekg(static_cast<std::streampos>(block_offsets[block]));
-    ASSERT_FALSE(in.fail());
-    ASSERT_FALSE(in.eof());
-    auto r = recordio::NewReader(&in, recordio::DefaultReaderOpts(filename));
+    int fd = open(filename.c_str(), O_RDONLY);
+    ASSERT_GE(fd, 0) << filename << ": " << std::strerror(errno);
+    auto off = block_offsets[block];
+    ASSERT_EQ(off, lseek(fd, off, SEEK_SET));
+    auto r = recordio::NewReader(recordio::NewReadSeekerFromDescriptor(fd),
+                                 recordio::DefaultReaderOpts(filename));
 
     for (int i = 0; i < 10 && block < TestBlockCount; i++) {
       ASSERT_TRUE(r->Scan());

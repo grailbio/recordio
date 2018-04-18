@@ -12,7 +12,7 @@ const int ChunkHeaderSize = 28;
 const int MaxChunkPayloadSize = internal::ChunkSize - ChunkHeaderSize;
 }  // namespace
 
-internal::ChunkReader::ChunkReader(std::istream* in, ErrorReporter* err)
+internal::ChunkReader::ChunkReader(ReadSeeker* in, ErrorReporter* err)
     : in_(in), err_(err), magic_(MagicInvalid), next_free_chunk_(0) {}
 
 bool internal::ChunkReader::Scan() {
@@ -69,9 +69,9 @@ bool internal::ChunkReader::Scan() {
 }
 
 void internal::ChunkReader::SeekLastBlock() {
-  in_->seekg(-ChunkSize, in_->end);
-  if (in_->fail()) {
-    err_->Set("Failed to seek to the last chunk");
+  int64_t unused;
+  err_->Set(in_->Seek(-ChunkSize, SEEK_END, &unused));
+  if (!err_->Ok()) {
     return;
   }
   Magic magic;
@@ -88,10 +88,9 @@ void internal::ChunkReader::SeekLastBlock() {
     err_->Set(msg.str());
     return;
   }
-  off_t off = -ChunkSize * (static_cast<int>(index) + 1);
-  in_->seekg(off, in_->end);
-  if (in_->fail()) {
-    err_->Set("Failed to seek to the beginning of the trailer");
+  const off_t off = -ChunkSize * (static_cast<int>(index) + 1);
+  err_->Set(in_->Seek(off, SEEK_END, &unused));
+  if (!err_->Ok()) {
     return;
   }
 }
@@ -106,9 +105,10 @@ bool internal::ChunkReader::ReadChunk(Magic* magic, uint32_t* index,
   }
   ChunkBuf* buf = free_chunks_[next_free_chunk_].get();
   next_free_chunk_++;
-  int n = ReadBytes(in_, buf->data(), ChunkSize);
-  if (n == 0) {
-    std::cout << "READC: " << n << "\n";
+  ssize_t n;
+  Error err = in_->Read(buf->data(), ChunkSize, &n);
+  if (err != "" || n <= 0) {
+    std::cout << "read: " << n << " " << err << "\n";
     return false;
   }
   if (n != ChunkSize) {

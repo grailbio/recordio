@@ -26,27 +26,14 @@ std::string MagicDebugString(const Magic& m) {
   return s.str();
 }
 
-// Read "bytes" byte from in_.
-int ReadBytes(std::istream* in, uint8_t* data, int bytes) {
-  int remaining = bytes;
-  while (remaining > 0) {
-    in->read(reinterpret_cast<char*>(data), remaining);
-    int n = in->gcount();
-    if (n <= 0) {
-      break;
-    }
-    data += n;
-    remaining -= n;
-  }
-  return bytes - remaining;
-}
-
-Error ReadFull(std::istream* in, uint8_t* data, int bytes) {
-  int n = ReadBytes(in, data, bytes);
+Error ReadFull(ReadSeeker* in, uint8_t* data, int bytes) {
+  ssize_t n;
+  Error err = in->Read(data, bytes, &n);
+  if (err != "") return err;
   if (n != bytes) {
     std::ostringstream msg;
-    msg << "Failed to read " << bytes
-        << " bytes from stream: " << std::strerror(errno);
+    msg << "Failed to read " << bytes << " bytes from stream, read " << n
+        << " bytes instead: " << std::strerror(errno);
     return msg.str();
   }
   return "";
@@ -58,19 +45,14 @@ std::string StrError(const std::string& prefix) {
   return msg.str();
 }
 
-Error Tell(std::istream* in, int64_t* off) {
-  *off = in->tellg();
-  if (in->fail()) {
-    return StrError("Failed to get the current seek offset");
-  }
-  return "";
-}
-
-Error AbsSeek(std::istream* in, int64_t off) {
-  in->seekg(off);
-  if (in->fail() || in->tellg() != off) {
+Error AbsSeek(ReadSeeker* in, off_t off) {
+  off_t new_off;
+  Error err = in->Seek(off, SEEK_SET, &new_off);
+  if (err != "") return err;
+  if (new_off != off) {
     std::ostringstream msg;
-    msg << "failed to seek to offset " << off << ": " << std::strerror(errno);
+    msg << "failed to seek to offset " << off << ", " << SEEK_SET << ": (got "
+        << new_off << "): " << std::strerror(errno);
     return msg.str();
   }
   return "";

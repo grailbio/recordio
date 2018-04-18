@@ -22,6 +22,7 @@ namespace recordio {
 using ByteSpan = internal::ByteSpan;
 using IoVec = internal::IoVec;
 using Error = internal::Error;
+using ReadSeeker = internal::ReadSeeker;
 
 // ItemLocation identifies the location of an item in a recordio file.
 struct ItemLocation {
@@ -108,9 +109,13 @@ struct ReaderOpts {
   std::unique_ptr<Transformer> legacy_transformer;
 };
 
-// Create a new reader that reads from "in". "in" remains owned by the caller,
-// and it must remain live while the reader is in use.
-std::unique_ptr<Reader> NewReader(std::istream* in, ReaderOpts opts);
+// Create a ReadSeeker object that reads from file "fd".  "fd" will be closed
+// when the readseeker is destroyed.
+std::unique_ptr<ReadSeeker> NewReadSeekerFromDescriptor(int fd);
+
+// Create a new reader that reads from "in".
+std::unique_ptr<Reader> NewReader(std::unique_ptr<ReadSeeker> in,
+                                  ReaderOpts opts);
 
 // Create a new reader for the given file. The options are auto-detected from
 // the path suffix. This function always returns a non-null reader. Errors

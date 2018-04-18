@@ -23,7 +23,7 @@ typedef std::array<uint8_t, ChunkSize> ChunkBuf;
 // transformation.
 class ChunkReader {
  public:
-  ChunkReader(std::istream* in, ErrorReporter* err);
+  ChunkReader(ReadSeeker* in, ErrorReporter* err);
   // Read the next block.
   bool Scan();
   // Read the chunks that constitute the current block.
@@ -45,7 +45,7 @@ class ChunkReader {
   bool ReadChunk(Magic* magic, uint32_t* index, uint32_t* total,
                  ChunkFlag* flag, ByteSpan* payload);
 
-  std::istream* in_;
+  ReadSeeker* in_;
   ErrorReporter* err_;
   Magic magic_;
   std::vector<ByteSpan> iov_;

@@ -1,3 +1,6 @@
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <cstring>
 #include <fstream>
 #include <memory>
@@ -31,13 +34,11 @@ ReaderOpts DefaultReaderOpts(const std::string& path) {
 
 namespace internal {
 std::unique_ptr<Reader> NewLegacyPackedReader(
-    std::istream* in, std::unique_ptr<Transformer> transformer,
-    std::unique_ptr<Cleanup> cleanup);
+    std::unique_ptr<ReadSeeker> in, std::unique_ptr<Transformer> transformer);
 std::unique_ptr<Reader> NewLegacyUnpackedReader(
-    std::istream* in, std::unique_ptr<Transformer> transformer,
-    std::unique_ptr<Cleanup> cleanup);
-namespace {
+    std::unique_ptr<ReadSeeker> in, std::unique_ptr<Transformer> transformer);
 
+namespace {
 class ErrorReaderImpl : public Reader {
  public:
   explicit ErrorReaderImpl(std::string err) : err_(std::move(err)) {}
@@ -97,11 +98,11 @@ int ParseChunksToItems(const IoVec& raw_iov, Transformer* tr,
 
 class ReaderImpl : public Reader {
  public:
-  ReaderImpl(std::istream* in, ReaderOpts opts, std::unique_ptr<Cleanup> closer)
-      : cr_(new ChunkReader(in, &err_)), closer_(std::move(closer)) {
+  ReaderImpl(std::unique_ptr<ReadSeeker> in, ReaderOpts opts)
+      : cr_(new ChunkReader(in.get(), &err_)), in_(std::move(in)) {
     readHeader();
     int64_t cur_off;
-    err_.Set(Tell(in, &cur_off));
+    err_.Set(in_->Seek(0, SEEK_CUR, &cur_off));
     bool has_trailer;
     err_.Set(HasTrailer(header_, &has_trailer));
     if (!err_.Ok()) return;
@@ -227,7 +228,7 @@ class ReaderImpl : public Reader {
  private:
   ErrorReporter err_;
   std::unique_ptr<ChunkReader> cr_;
-  std::unique_ptr<Cleanup> closer_;
+  std::unique_ptr<ReadSeeker> in_;
   int next_item_ = 0;
   std::vector<uint8_t>* item_ = nullptr;
 
@@ -238,50 +239,103 @@ class ReaderImpl : public Reader {
   std::unique_ptr<Transformer> untransformer_;
 };
 
-std::unique_ptr<Reader> NewReader(std::istream* in, ReaderOpts opts,
-                                  std::unique_ptr<Cleanup> closer) {
+std::unique_ptr<Reader> NewReader(std::unique_ptr<ReadSeeker> in,
+                                  ReaderOpts opts) {
   int64_t cur_off;
-  internal::Error err = Tell(in, &cur_off);
+  internal::Error err = in->Seek(0, SEEK_CUR, &cur_off);
   if (err != "") {
     return std::unique_ptr<Reader>(new ErrorReaderImpl(err));
   }
   Magic magic;
-  err = ReadFull(in, magic.data(), magic.size());
+  err = ReadFull(in.get(), magic.data(), magic.size());
   if (err != "") {
     return std::unique_ptr<Reader>(new ErrorReaderImpl(err));
   }
-  err = AbsSeek(in, cur_off);
+  err = AbsSeek(in.get(), cur_off);
   if (err != "") {
     return std::unique_ptr<Reader>(new ErrorReaderImpl(err));
   }
   if (magic == MagicPacked) {
-    return NewLegacyPackedReader(in, std::move(opts.legacy_transformer),
-                                 std::move(closer));
+    return NewLegacyPackedReader(std::move(in),
+                                 std::move(opts.legacy_transformer));
   }
   if (magic == MagicUnpacked) {
     return internal::NewLegacyUnpackedReader(
-        in, std::move(opts.legacy_transformer), std::move(closer));
+        std::move(in), std::move(opts.legacy_transformer));
   }
   return std::unique_ptr<Reader>(
-      new ReaderImpl(in, std::move(opts), std::move(closer)));
+      new ReaderImpl(std::move(in), std::move(opts)));
 }
+
+class ReadSeekerAdapter : public ReadSeeker {
+ public:
+  explicit ReadSeekerAdapter(int fd) : fd_(fd) {}
+  explicit ReadSeekerAdapter(Error err) : fd_(-1), err_(err) {}
+
+  ~ReadSeekerAdapter() override {
+    if (fd_ >= 0) {
+      if (close(fd_) < 0) {
+        std::cerr << "close " << fd_ << ": " << std::strerror(errno);
+      }
+    }
+  }
+
+  Error Seek(off_t off, int whence, off_t* new_off) {
+    if (err_ != "") {
+      *new_off = -1;
+      return err_;
+    }
+    *new_off = lseek(fd_, off, whence);
+    if (*new_off < 0) {
+      std::ostringstream msg;
+      msg << "lseek " << off << ": " << std::strerror(errno);
+      return msg.str();
+    }
+    return "";
+  }
+
+  Error Read(uint8_t* buf, size_t bytes, ssize_t* bytes_read) {
+    if (err_ != "") {
+      *bytes_read = -1;
+      return err_;
+    }
+    *bytes_read = read(fd_, buf, bytes);
+    if (*bytes_read < 0) {
+      std::ostringstream msg;
+      msg << "read " << bytes << ": " << std::strerror(errno);
+      return msg.str();
+    }
+    return "";
+  }
+
+ private:
+  const int fd_;
+  const Error err_;
+};
+
 }  // namespace
 }  // namespace internal
 
-std::unique_ptr<Reader> NewReader(std::istream* in, ReaderOpts opts) {
-  return internal::NewReader(in, std::move(opts), nullptr);
+std::unique_ptr<Reader> NewReader(std::unique_ptr<ReadSeeker> in,
+                                  ReaderOpts opts) {
+  return internal::NewReader(std::move(in), std::move(opts));
+}
+
+std::unique_ptr<ReadSeeker> NewReadSeekerFromDescriptor(int fd) {
+  std::unique_ptr<ReadSeeker> x(new internal::ReadSeekerAdapter(fd));
+  return x;
 }
 
 std::unique_ptr<Reader> NewReader(const std::string& path) {
-  class Closer : public internal::Cleanup {
-   public:
-    std::ifstream in;
-  };
   auto opts = DefaultReaderOpts(path);
-  std::unique_ptr<Closer> c(new Closer);
-  c->in.open(path.c_str());
-  std::ifstream* in = &c->in;
-  return internal::NewReader(in, std::move(opts), std::move(c));
+  int fd = open(path.c_str(), O_RDONLY);
+  if (fd < 0) {
+    std::ostringstream msg;
+    msg << "open " << path << ": " << std::strerror(errno);
+    std::unique_ptr<ReadSeeker> r(new internal::ReadSeekerAdapter(msg.str()));
+    return internal::NewReader(std::move(r), std::move(opts));
+  }
+  return internal::NewReader(NewReadSeekerFromDescriptor(fd), std::move(opts));
 }
 
 }  // namespace recordio

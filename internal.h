@@ -1,6 +1,8 @@
 #ifndef LIB_RECORDIO_INTERNAL_H_
 #define LIB_RECORDIO_INTERNAL_H_
 
+#include <sys/types.h>
+#include <unistd.h>
 #include <zlib.h>
 
 #include <array>
@@ -28,22 +30,29 @@ inline uint32_t Crc32(const uint8_t* data, int bytes) {
   return crc32(0, data, bytes);
 }
 
-// Read "bytes" byte from in_. Returns the actual number of bytes read.
-int ReadBytes(std::istream* in, char* data, int bytes);
-int ReadBytes(std::istream* in, uint8_t* data, int bytes);
+// ReadSeeker is an abstract interface for low-level file I/O.
+class ReadSeeker {
+ public:
+  ReadSeeker() {}
+  ReadSeeker(const ReadSeeker&) = delete;
+  virtual ~ReadSeeker() {}
+
+  // It moves the read position to "offset" from "whence". "whence" is one of
+  // SEEK_SET, SEEK_CUR, SEEK_END. This is the same as lseek(2). On return, it
+  // sets *new_offset to the new read position.
+  virtual Error Seek(off_t offset, int whence, off_t* new_offset) = 0;
+
+  // Read up to "bytes" bytes into buf. *bytes_read is set to the actual number
+  // of bytes read. Unless at the end of file, this function reads at least one
+  // byte. On EOF, Read sets *bytes_read=0 and returns "".
+  virtual Error Read(uint8_t* buf, size_t bytes, ssize_t* bytes_read) = 0;
+};
 
 // Read exactly "bytes". Returns an error string on error.
-Error ReadFull(std::istream* in, uint8_t* data, int bytes);
+Error ReadFull(ReadSeeker* in, uint8_t* data, int bytes);
 
 // Seek to the given abs offset. Returns an error string on error.
-Error AbsSeek(std::istream* in, int64_t off);
-// Get the current seek offset. Returns an error string on error.
-Error Tell(std::istream* in, int64_t* off);
-
-class Cleanup {
- public:
-  virtual ~Cleanup() {}
-};
+Error AbsSeek(ReadSeeker* in, int64_t off);
 
 // For accumulating errors. Thread compatible.
 class ErrorReporter {

@@ -43,10 +43,9 @@ internal::Error RunTransformer(Transformer* t, std::vector<uint8_t>* buf,
 // BaseReader implements a raw reader w/o any transformation.
 class BaseReader {
  public:
-  explicit BaseReader(std::istream* in, internal::Magic magic,
-                      std::unique_ptr<internal::Cleanup> cleanup,
+  explicit BaseReader(std::unique_ptr<ReadSeeker> in, internal::Magic magic,
                       internal::ErrorReporter* err)
-      : in_(in), magic_(magic), cleanup_(std::move(cleanup)), err_(err) {}
+      : in_(std::move(in)), magic_(magic), err_(err) {}
 
   bool Scan() {
     uint64_t size;
@@ -57,8 +56,7 @@ class BaseReader {
     int n = ReadBytes(buf_.data(), size);
     if (static_cast<uint64_t>(n) != size) {
       std::ostringstream msg;
-      msg << "failed to read " << size << " byte body (found " << in_->gcount()
-          << " bytes";
+      msg << "failed to read " << size << " byte body (found " << n << " bytes";
       err_->Set(msg.str());
       return false;
     }
@@ -72,13 +70,14 @@ class BaseReader {
   // length of the rest of the block.
   bool ReadHeader(uint64_t* size) {
     uint8_t header[HeaderSize];
-    int n = ReadBytes(header, sizeof(header));
-    if (n <= 0) {
-      if (!in_->eof()) {
-        std::ostringstream msg;
-        msg << "Failed to read file: " << strerror(errno);
-        err_->Set(msg.str());
-      }
+    ssize_t n = ReadBytes(header, sizeof(header));
+    if (n < 0) {
+      std::ostringstream msg;
+      msg << "Failed to read file: " << strerror(errno);
+      err_->Set(msg.str());
+      return false;  // EOF
+    }
+    if (n == 0) {
       return false;  // EOF
     }
     if (n != sizeof header) {
@@ -123,11 +122,11 @@ class BaseReader {
   }
 
   // Read "bytes" byte from in_.
-  int ReadBytes(uint8_t* data, int bytes) {
+  ssize_t ReadBytes(uint8_t* data, int bytes) {
     int remaining = bytes;
     while (remaining > 0) {
-      in_->read(reinterpret_cast<char*>(data), remaining);
-      int n = in_->gcount();
+      ssize_t n;
+      in_->Read(reinterpret_cast<uint8_t*>(data), remaining, &n);
       if (n <= 0) {
         break;
       }
@@ -137,9 +136,8 @@ class BaseReader {
     return bytes - remaining;
   }
 
-  std::istream* const in_;
+  std::unique_ptr<ReadSeeker> const in_;
   const internal::Magic magic_;
-  const std::unique_ptr<internal::Cleanup> cleanup_;
   internal::ErrorReporter* const err_;
   std::vector<uint8_t> buf_;
 };
@@ -147,10 +145,9 @@ class BaseReader {
 // Implementation of an unpacked reader.
 class UnpackedReaderImpl : public Reader {
  public:
-  explicit UnpackedReaderImpl(std::istream* in,
-                              std::unique_ptr<Transformer> transformer,
-                              std::unique_ptr<internal::Cleanup> cleanup)
-      : r_(in, internal::MagicUnpacked, std::move(cleanup), &err_),
+  explicit UnpackedReaderImpl(std::unique_ptr<ReadSeeker> in,
+                              std::unique_ptr<Transformer> transformer)
+      : r_(std::move(in), internal::MagicUnpacked, &err_),
         transformer_(std::move(transformer)) {}
 
   std::vector<HeaderEntry> Header() override {
@@ -186,10 +183,9 @@ class UnpackedReaderImpl : public Reader {
 // Implementation of a packed reader.
 class PackedReaderImpl : public Reader {
  public:
-  explicit PackedReaderImpl(std::istream* in,
-                            std::unique_ptr<Transformer> transformer,
-                            std::unique_ptr<internal::Cleanup> cleanup)
-      : r_(in, internal::MagicPacked, std::move(cleanup), &err_),
+  explicit PackedReaderImpl(std::unique_ptr<ReadSeeker> in,
+                            std::unique_ptr<Transformer> transformer)
+      : r_(std::move(in), internal::MagicPacked, &err_),
         transformer_(std::move(transformer)),
         cur_item_(0) {}
 
@@ -288,17 +284,15 @@ class PackedReaderImpl : public Reader {
 
 namespace internal {
 std::unique_ptr<Reader> NewLegacyPackedReader(
-    std::istream* in, std::unique_ptr<Transformer> transformer,
-    std::unique_ptr<internal::Cleanup> cleanup) {
+    std::unique_ptr<ReadSeeker> in, std::unique_ptr<Transformer> transformer) {
   return std::unique_ptr<Reader>(
-      new PackedReaderImpl(in, std::move(transformer), std::move(cleanup)));
+      new PackedReaderImpl(std::move(in), std::move(transformer)));
 }
 
 std::unique_ptr<Reader> NewLegacyUnpackedReader(
-    std::istream* in, std::unique_ptr<Transformer> transformer,
-    std::unique_ptr<internal::Cleanup> cleanup) {
+    std::unique_ptr<ReadSeeker> in, std::unique_ptr<Transformer> transformer) {
   return std::unique_ptr<Reader>(
-      new UnpackedReaderImpl(in, std::move(transformer), std::move(cleanup)));
+      new UnpackedReaderImpl(std::move(in), std::move(transformer)));
 }
 }  // namespace internal
 
