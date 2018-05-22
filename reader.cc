@@ -16,9 +16,6 @@
 namespace grail {
 namespace recordio {
 
-Reader::~Reader() {}
-Transformer::~Transformer() {}
-
 ReaderOpts DefaultReaderOpts(const std::string& path) {
   ReaderOpts r;
   switch (DetermineFileType(path)) {
@@ -280,7 +277,7 @@ class ReadSeekerAdapter : public ReadSeeker {
     }
   }
 
-  Error Seek(off_t off, int whence, off_t* new_off) {
+  Error Seek(off_t off, int whence, off_t* new_off) override {
     if (err_ != "") {
       *new_off = -1;
       return err_;
@@ -294,7 +291,7 @@ class ReadSeekerAdapter : public ReadSeeker {
     return "";
   }
 
-  Error Read(uint8_t* buf, size_t bytes, ssize_t* bytes_read) {
+  Error Read(uint8_t* buf, size_t bytes, ssize_t* bytes_read) override {
     if (err_ != "") {
       *bytes_read = -1;
       return err_;

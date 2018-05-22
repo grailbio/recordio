@@ -84,7 +84,7 @@ class Reader {
 
   Reader() = default;
   Reader(const Reader&) = delete;
-  virtual ~Reader();
+  virtual ~Reader() = default;
 };
 
 // Transformer is invoked to (un)compress or (un)encrypt a block.
@@ -97,7 +97,7 @@ class Transformer {
   virtual Error Transform(IoVec in, IoVec* out) = 0;
   Transformer() = default;
   Transformer(const Transformer&) = delete;
-  ~Transformer();
+  virtual ~Transformer() = default;
 };
 
 struct ReaderOpts {
