@@ -34,7 +34,7 @@ cc_test(
     deps = [
         ":recordio",
         "//lib/test_util",
-        "@com_github_google_googletest//:gmock",
-        "@com_github_google_googletest//:gtest",
+        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
     ],
 )
