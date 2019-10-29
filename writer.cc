@@ -7,9 +7,8 @@
 #include <iostream>
 
 #include "./portable_endian.h"
-#include "lib/file/names.h"
-#include "lib/recordio/internal.h"
-#include "lib/recordio/recordio.h"
+#include "./internal.h"
+#include "./recordio.h"
 
 namespace grail {
 namespace recordio {
@@ -320,20 +319,19 @@ class PackedWriterImpl : public Writer {
 
 WriterOpts DefaultWriterOpts(const std::string& path) {
   WriterOpts r;
-  switch (DetermineFileType(path)) {
-    case FileType::GrailRIO:
-      break;
-    case FileType::GrailRIOPacked:
-      r.packed = true;
-      break;
-    case FileType::GrailRIOPackedCompressed:
-      r.packed = true;
-      r.transformer = FlateTransformer();
-      break;
-    default:
-      // Punt. The writer will cause an error.
-      break;
+  if (internal::HasSuffix(path, ".grail-rio")) {
+    return r;
   }
+  if (internal::HasSuffix(path, ".grail-rpk")) {
+    r.packed = true;
+    return r;
+  }
+  if (internal::HasSuffix(path, ".grail-rpk-gz")) {
+    r.packed = true;
+    r.transformer = FlateTransformer();
+    return r;
+  }
+  // Punt. The writer will cause an error.
   return r;
 }
 

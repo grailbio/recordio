@@ -163,6 +163,9 @@ inline size_t IoVecSize(IoVec iov) {
 // Convert an iovec to a flat vector.
 std::vector<uint8_t> IoVecFlatten(IoVec iov);
 
+// Check if str ends with the given suffix.
+bool HasSuffix(const std::string& str, const std::string& suffix);
+
 }  // namespace internal
 }  // namespace recordio
 }  // namespace grail

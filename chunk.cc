@@ -1,4 +1,4 @@
-#include "lib/recordio/chunk.h"
+#include "./chunk.h"
 
 #include <cerrno>
 #include <cstring>

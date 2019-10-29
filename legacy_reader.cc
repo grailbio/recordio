@@ -6,9 +6,8 @@
 #include <vector>
 
 #include "./portable_endian.h"
-#include "lib/file/names.h"
-#include "lib/recordio/internal.h"
-#include "lib/recordio/recordio.h"
+#include "./internal.h"
+#include "./recordio.h"
 
 namespace grail {
 namespace recordio {

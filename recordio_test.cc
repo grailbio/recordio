@@ -14,9 +14,8 @@
 #include <sstream>
 #include <utility>
 
-#include "lib/recordio/internal.h"
-#include "lib/recordio/recordio.h"
-#include "lib/test_util/test_util.h"
+#include "./internal.h"
+#include "./recordio.h"
 
 namespace grail {
 
@@ -123,6 +122,7 @@ TEST(Recordio, ReadV2) {
   CheckSeek(r.get(), 65536, 26, "KLMNOPQR");
 }
 
+std::string TempDir() { return "/tmp"; }
 std::string ReadFile(std::string filename) {
   std::ifstream file(filename);
   EXPECT_FALSE(file.fail());
@@ -134,33 +134,31 @@ std::string ReadFile(std::string filename) {
 }
 
 TEST(Recordio, Write) {
-  std::string filename = test_util::GetTempDirPath() + "/test.grail-rio";
+  std::string filename = TempDir() + "/test.grail-rio";
   {
     auto r = recordio::NewWriter(filename);
     WriteContentsAndClose(r.get());
   }
 
-  EXPECT_EQ(ReadFile("lib/recordio/testdata/test.grail-rio"),
-            ReadFile(filename));
+  EXPECT_EQ(ReadFile("lib/recordio/testdata/test.grail-rio"), ReadFile(filename));
 
   remove(filename.c_str());
 }
 
 TEST(Recordio, WritePacked) {
-  std::string filename = test_util::GetTempDirPath() + "/test.grail-rpk";
+  std::string filename = TempDir() + "/test.grail-rpk";
   {
     auto r = recordio::NewWriter(filename);
     WriteContentsAndClose(r.get());
   }
 
-  EXPECT_EQ(ReadFile("lib/recordio/testdata/test.grail-rpk"),
-            ReadFile(filename));
+  EXPECT_EQ(ReadFile("lib/recordio/testdata/test.grail-rpk"), ReadFile(filename));
 
   remove(filename.c_str());
 }
 
 TEST(Recordio, WritePackedGz) {
-  std::string filename = test_util::GetTempDirPath() + "/test.grail-rpk-gz";
+  std::string filename = TempDir() + "/test.grail-rpk-gz";
   {
     auto r = recordio::NewWriter(filename);
     WriteContentsAndClose(r.get());
@@ -175,7 +173,7 @@ TEST(Recordio, WritePackedGz) {
 }
 
 TEST(Recordio, WritePackingOptions) {
-  std::string filename = test_util::GetTempDirPath() + "/test.grail-rpk-gz";
+  std::string filename = TempDir() + "/test.grail-rpk-gz";
   {
     auto opts = recordio::DefaultWriterOpts(filename);
     opts.max_packed_items = 3;
@@ -211,7 +209,7 @@ class TestIndexer : public recordio::WriterIndexer {
 };
 
 TEST(Recordio, WriteIndex) {
-  std::string filename = test_util::GetTempDirPath() + "/test.grail-rio";
+  std::string filename = TempDir() + "/test.grail-rio";
   std::vector<uint64_t> block_offsets;
   {
     auto opts = recordio::DefaultWriterOpts(filename);

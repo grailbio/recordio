@@ -9,7 +9,7 @@
 #include <sstream>
 #include <unordered_map>
 
-#include "lib/recordio/recordio.h"
+#include "./recordio.h"
 
 namespace grail {
 namespace recordio {

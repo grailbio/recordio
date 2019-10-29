@@ -7,8 +7,8 @@
 #include <string>
 #include <vector>
 
-#include "lib/recordio/internal.h"
-#include "lib/recordio/recordio.h"
+#include "./internal.h"
+#include "./recordio.h"
 
 namespace grail {
 namespace recordio {

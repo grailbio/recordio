@@ -1,4 +1,4 @@
-#include "lib/recordio/internal.h"
+#include "./internal.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -153,6 +153,12 @@ std::vector<uint8_t> IoVecFlatten(IoVec iov) {
   return buf;
 }
 
+bool HasSuffix(const std::string& str, const std::string& suffix) {
+  if (str.size() < suffix.size()) {
+    return false;
+  }
+  return std::equal(suffix.rbegin(), suffix.rend(), str.rbegin());
+}
 }  // namespace internal
 }  // namespace recordio
 }  // namespace grail

@@ -8,24 +8,20 @@
 #include <vector>
 
 #include "./portable_endian.h"
-#include "lib/file/names.h"
-#include "lib/recordio/chunk.h"
-#include "lib/recordio/header.h"
-#include "lib/recordio/recordio.h"
+#include "./chunk.h"
+#include "./header.h"
+#include "./recordio.h"
 
 namespace grail {
 namespace recordio {
 
 ReaderOpts DefaultReaderOpts(const std::string& path) {
   ReaderOpts r;
-  switch (DetermineFileType(path)) {
-    case FileType::GrailRIOPackedCompressed:
-      r.legacy_transformer = UnflateTransformer();
-      break;
-    default:
-      // Punt. The reader will cause an error.
-      break;
+  if (internal::HasSuffix(path, ".grail-rpk-gz")) {
+    r.legacy_transformer = UnflateTransformer();
+    return r;
   }
+  // Punt. The reader will cause an error.
   return r;
 }
 

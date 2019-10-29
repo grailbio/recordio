@@ -14,8 +14,8 @@
 #include <string>
 #include <vector>
 
-#include "lib/recordio/header.h"
-#include "lib/recordio/internal.h"
+#include "./header.h"
+#include "./internal.h"
 
 namespace grail {
 namespace recordio {
